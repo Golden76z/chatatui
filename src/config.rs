@@ -65,6 +65,9 @@ auto_compact = false
 # auto_index = false       # update changed collections (at startup and while running)
 # rerank_model = ""        # e.g. "bge-reranker-v2-m3" on a server with /v1/rerank
 # rerank_provider = ""     # provider serving it (default: embedding_provider)
+# rerank_url = ""          # or a local rerank server: "http://localhost:8081" for
+#                          # `llama-server --reranking --port 8081 -m bge-reranker….gguf`
+#                          # (also Text Embeddings Inference, Infinity); model optional
 # rerank_candidates = 20   # passages re-scored before keeping top_k
 
 # Providers. "ollama", "openai" (ChatGPT) and "claude" are predefined: the sections below

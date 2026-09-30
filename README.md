@@ -168,14 +168,31 @@ ocr_languages = "fra+eng"       # Tesseract languages (missing ones are skipped)
 auto_index = false              # update changed collections (at startup and while running)
 rerank_model = ""               # e.g. "bge-reranker-v2-m3": re-score passages (see below)
 rerank_provider = ""            # provider serving it (default: embedding_provider)
+rerank_url = ""                 # or a dedicated rerank server, e.g. "http://localhost:8081"
 rerank_candidates = 20          # passages re-scored before keeping top_k
 ```
 
-With `rerank_model` set, the best `rerank_candidates` passages of the hybrid search are
-re-scored by a cross-encoder through `POST /v1/rerank` (llama.cpp server started with
-`--reranking`, vLLM, Text Embeddings Inference, Jina…), and the `top_k` best are kept.
-More precise on pointed questions, at the cost of one extra request per reply; if the
-reranker is unreachable, the hybrid order is used.
+With `rerank_model` or `rerank_url` set, the best `rerank_candidates` passages of the
+hybrid search are re-scored by a cross-encoder, and the `top_k` best are kept. More
+precise on pointed questions, at the cost of one extra request per reply; if the reranker
+is unreachable, the hybrid order is used. `/context` shows the reranker in use.
+
+The request goes to `…/rerank` in the Cohere / Jina format (llama.cpp server, vLLM,
+Infinity), or in the Text Embeddings Inference format, detected on the first reply. Ollama
+has no rerank endpoint, but a cross-encoder runs locally with llama.cpp, next to Ollama:
+
+```sh
+# a GGUF of bge-reranker-v2-m3 (multilingual), e.g. from Hugging Face
+llama-server -m bge-reranker-v2-m3-Q8_0.gguf --reranking --port 8081
+```
+
+```toml
+[rag]
+rerank_url = "http://localhost:8081"   # rerank_model can stay empty: the server's model
+```
+
+Text Embeddings Inference (`--model-id BAAI/bge-reranker-base`) and Infinity work the same
+way with their own port.
 
 `/rag <collection>` makes the conversation search that collection before each reply. The
 question (with the previous one when it is a short follow-up) is searched by meaning

@@ -47,8 +47,11 @@ pub struct RagConfig {
     /// Update the collections whose folder changed, at startup and while chatatui runs
     /// (`/index` in the background).
     pub auto_index: bool,
-    /// Re-ranking model (`/v1/rerank`); empty: no re-ranking.
+    /// Re-ranking model (`…/rerank`); empty: no re-ranking, unless `rerank_url` is set.
     pub rerank_model: String,
+    /// A dedicated rerank server (llama.cpp `--reranking`, Text Embeddings Inference,
+    /// Infinity…), used instead of `rerank_provider`.
+    pub rerank_url: String,
     /// Provider serving `rerank_model` (default: the embedding provider).
     pub rerank_provider: String,
     /// Passages given to the reranker.
@@ -70,6 +73,7 @@ impl Default for RagConfig {
             ocr_languages: "fra+eng".into(),
             auto_index: false,
             rerank_model: String::new(),
+            rerank_url: String::new(),
             rerank_provider: String::new(),
             rerank_candidates: 20,
         }

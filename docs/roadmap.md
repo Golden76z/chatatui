@@ -17,7 +17,9 @@
 - **J25**: versions — `/edit` and `/retry` keep what they replace, `Alt+←` / `Alt+→`
   switch between versions.
 - **J26**: Windows — `clip.exe`, Windows paths, CI job and release binary.
+- **J27**: local re-ranking — `rerank_url` (llama.cpp `--reranking`, Text Embeddings
+  Inference, Infinity).
 
 ## Next
 
-- Re-ranking with a local cross-encoder when the server has no `/v1/rerank`.
+- Nothing planned: ideas welcome.

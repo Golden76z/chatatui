@@ -331,3 +331,133 @@ fn invalid_base_url_is_rejected() {
     );
     assert!(matches!(result, Err(LlmError::Protocol(_))));
 }
+
+/// Serves one connection per response, in order; returns the base URL and the requests
+/// received (JSON bodies).
+async fn serve_responses(
+    responses: Vec<(&'static str, &'static str)>,
+) -> (
+    String,
+    tokio::sync::mpsc::UnboundedReceiver<serde_json::Value>,
+) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let base_url = format!("http://{}", listener.local_addr().expect("addr"));
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        for (status, body) in responses {
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            let request = read_request(&mut socket).await;
+            let json = request
+                .split_once("\r\n\r\n")
+                .and_then(|(head, body)| {
+                    head.starts_with("POST /rerank ")
+                        .then(|| serde_json::from_str(body).ok())
+                        .flatten()
+                })
+                .unwrap_or(serde_json::Value::Null);
+            let _ = tx.send(json);
+            socket
+                .write_all(json_head(status, body).as_bytes())
+                .await
+                .expect("write head");
+            socket.write_all(body.as_bytes()).await.expect("write body");
+            socket.flush().await.expect("flush");
+        }
+    });
+    (base_url, rx)
+}
+
+fn documents() -> Vec<String> {
+    vec![
+        "le borrow checker".into(),
+        "les traits".into(),
+        "Cargo".into(),
+    ]
+}
+
+#[tokio::test]
+async fn local_rerank_server_in_cohere_format() {
+    use chatatui::rag::rerank::{Format, HttpReranker, Reranker};
+    // llama.cpp `--reranking`: results in any order, `relevance_score`.
+    let (base_url, mut received) = serve_responses(vec![(
+        "200 OK",
+        r#"{"model":"x","results":[{"index":1,"relevance_score":0.9},{"index":0,"relevance_score":-2.5},{"index":2,"relevance_score":0.1}]}"#,
+    )])
+    .await;
+    let reranker =
+        HttpReranker::at_url(&format!("{base_url}/"), "", Duration::from_secs(2)).expect("url");
+    assert_eq!(reranker.format(), Format::Unknown);
+    let scores = reranker
+        .rerank("Qu'est-ce qu'un trait ?", &documents())
+        .await
+        .expect("scores");
+    assert_eq!(scores, vec![-2.5, 0.9, 0.1]);
+    assert_eq!(reranker.format(), Format::Cohere);
+    let body = received.recv().await.expect("request");
+    assert_eq!(body["query"], "Qu'est-ce qu'un trait ?");
+    assert_eq!(body["documents"][2], "Cargo");
+    assert!(body.get("model").is_none(), "no model: the server's own");
+}
+
+#[tokio::test]
+async fn text_embeddings_inference_format_is_detected_and_remembered() {
+    use chatatui::rag::rerank::{Format, HttpReranker, Reranker};
+    let (base_url, mut received) = serve_responses(vec![
+        (
+            "422 Unprocessable Entity",
+            r#"{"error":"Json deserialize error: missing field `texts`","error_type":"Validation"}"#,
+        ),
+        ("200 OK", r#"[{"index":2,"score":0.7},{"index":0,"score":0.2},{"index":1,"score":0.01}]"#),
+        ("200 OK", r#"[{"index":0,"score":0.5},{"index":1,"score":0.4},{"index":2,"score":0.3}]"#),
+    ])
+    .await;
+    let reranker =
+        HttpReranker::at_url(&base_url, "bge-reranker-base", Duration::from_secs(2)).expect("url");
+    let scores = reranker
+        .rerank("cargo", &documents())
+        .await
+        .expect("scores");
+    assert_eq!(scores, vec![0.2, 0.01, 0.7]);
+    assert_eq!(reranker.format(), Format::Tei);
+    let cohere = received.recv().await.expect("first request");
+    assert_eq!(cohere["model"], "bge-reranker-base");
+    let tei = received.recv().await.expect("second request");
+    assert_eq!(tei["texts"][0], "le borrow checker");
+    assert!(tei.get("documents").is_none());
+
+    // Known from now on: one request.
+    let scores = reranker
+        .rerank("cargo", &documents())
+        .await
+        .expect("scores");
+    assert_eq!(scores, vec![0.5, 0.4, 0.3]);
+    assert!(
+        received
+            .recv()
+            .await
+            .expect("third request")
+            .get("texts")
+            .is_some()
+    );
+}
+
+#[tokio::test]
+async fn rerank_server_errors_are_not_mistaken_for_another_format() {
+    use chatatui::rag::rerank::{Format, HttpReranker, Reranker};
+    let (base_url, _received) = serve_responses(vec![(
+        "500 Internal Server Error",
+        r#"{"error":{"message":"model is not a reranker"}}"#,
+    )])
+    .await;
+    let reranker = HttpReranker::at_url(&base_url, "", Duration::from_secs(2)).expect("url");
+    let error = reranker.rerank("x", &documents()).await.expect_err("fails");
+    assert_eq!(
+        error,
+        LlmError::Http {
+            status: 500,
+            message: "model is not a reranker".into()
+        }
+    );
+    assert_eq!(reranker.format(), Format::Unknown, "tried again next time");
+    assert!(HttpReranker::at_url("pas une url", "", Duration::from_secs(2)).is_err());
+}

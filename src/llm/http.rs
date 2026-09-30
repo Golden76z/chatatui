@@ -63,7 +63,16 @@ pub fn client_for(
     provider: &Provider,
     connect_timeout: Duration,
 ) -> Result<(Client, Endpoint), LlmError> {
-    let base_url = provider.base_url.trim_end_matches('/').to_owned();
+    client_for_url(&provider.label, &provider.base_url, connect_timeout)
+}
+
+/// Builds the HTTP client and endpoint for the server `label` at `base_url`.
+pub fn client_for_url(
+    label: &str,
+    base_url: &str,
+    connect_timeout: Duration,
+) -> Result<(Client, Endpoint), LlmError> {
+    let base_url = base_url.trim().trim_end_matches('/').to_owned();
     Url::parse(&base_url)
         .map_err(|e| LlmError::Protocol(format!("URL invalide « {base_url} » : {e}")))?;
     let mut builder = Client::builder().connect_timeout(connect_timeout);
@@ -77,7 +86,7 @@ pub fn client_for(
     Ok((
         client,
         Endpoint {
-            server: provider.label.clone(),
+            server: label.to_owned(),
             base_url,
         },
     ))

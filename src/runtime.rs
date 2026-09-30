@@ -533,6 +533,16 @@ fn build_reranker(
     providers: &[crate::config::Provider],
 ) -> Option<Arc<dyn crate::rag::rerank::Reranker>> {
     let rag = &config.rag;
+    let timeout = Duration::from_secs(config.connect_timeout_secs);
+    if !rag.rerank_url.trim().is_empty() {
+        return crate::rag::rerank::HttpReranker::at_url(
+            &rag.rerank_url,
+            rag.rerank_model.trim(),
+            timeout,
+        )
+        .ok()
+        .map(|r| Arc::new(r) as Arc<dyn crate::rag::rerank::Reranker>);
+    }
     if rag.rerank_model.trim().is_empty() {
         return None;
     }
@@ -542,13 +552,9 @@ fn build_reranker(
         &rag.rerank_provider
     };
     let provider = providers.iter().find(|p| &p.id == id)?;
-    crate::rag::rerank::HttpReranker::new(
-        provider,
-        &rag.rerank_model,
-        Duration::from_secs(config.connect_timeout_secs),
-    )
-    .ok()
-    .map(|r| Arc::new(r) as Arc<dyn crate::rag::rerank::Reranker>)
+    crate::rag::rerank::HttpReranker::new(provider, &rag.rerank_model, timeout)
+        .ok()
+        .map(|r| Arc::new(r) as Arc<dyn crate::rag::rerank::Reranker>)
 }
 
 /// A value unique to this process run, used to build conversation ids.
@@ -557,4 +563,43 @@ fn session_seed() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
     (millis << 16) ^ u64::from(std::process::id() & 0xffff)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_reranker_comes_from_rerank_url_or_a_provider() {
+        let mut config = Config::default();
+        let providers = config.resolve_providers(|_| None);
+        assert!(
+            build_reranker(&config, &providers).is_none(),
+            "off by default"
+        );
+
+        config.rag.rerank_url = "http://localhost:8081".into();
+        assert!(
+            build_reranker(&config, &providers).is_some(),
+            "dedicated server"
+        );
+
+        config.rag.rerank_url = "pas une url".into();
+        assert!(
+            build_reranker(&config, &providers).is_none(),
+            "invalid: left out"
+        );
+
+        config.rag.rerank_url.clear();
+        config.rag.rerank_model = "bge-reranker-v2-m3".into();
+        assert!(
+            build_reranker(&config, &providers).is_some(),
+            "embedding provider"
+        );
+        config.rag.rerank_provider = "inconnu".into();
+        assert!(
+            build_reranker(&config, &providers).is_none(),
+            "unknown provider"
+        );
+    }
 }

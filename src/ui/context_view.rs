@@ -225,6 +225,32 @@ pub fn lines(app: &App, width: usize) -> Vec<Line<'static>> {
                 format_count(app.rag.context_tokens)
             )),
         ]));
+        let rag = &app.rag;
+        let model = rag.rerank_model.trim();
+        let reranker = if !rag.rerank_url.trim().is_empty() {
+            let url = rag.rerank_url.trim();
+            Some(if model.is_empty() {
+                url.to_owned()
+            } else {
+                format!("{model} sur {url}")
+            })
+        } else if !model.is_empty() {
+            let provider = if rag.rerank_provider.is_empty() {
+                &rag.embedding_provider
+            } else {
+                &rag.rerank_provider
+            };
+            Some(format!("{model} sur {provider}"))
+        } else {
+            None
+        };
+        lines.push(Line::from(vec![
+            label("Re-classement"),
+            Span::raw(match reranker {
+                Some(reranker) => format!("{reranker}, {} candidats", rag.rerank_candidates),
+                None => "non (ordre de la recherche hybride)".to_owned(),
+            }),
+        ]));
         if let Some(retrieved) = &app.retrieved {
             for (i, chunk) in retrieved.chunks.iter().enumerate() {
                 let head = format!("   [{}] ", retrieved.first_number + i);
