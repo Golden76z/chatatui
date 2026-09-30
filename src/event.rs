@@ -49,6 +49,12 @@ pub enum AppEvent {
     CollectionsChecked(Result<Vec<crate::rag::indexer::Staleness>, String>),
     /// A file to attach was read.
     FileRead(Result<Attachment, String>),
+    /// Result of [`crate::action::Effect::Copy`].
+    Copied {
+        what: String,
+        chars: usize,
+        how: crate::clipboard::Copied,
+    },
     /// Completions of a partial path.
     PathCompletions {
         partial: String,

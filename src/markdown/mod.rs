@@ -8,5 +8,5 @@ mod render;
 mod wrap;
 
 pub use highlight::warm_up;
-pub use render::render;
+pub use render::{code_blocks, render};
 pub use wrap::{display_width, wrap_plain, wrap_spans};

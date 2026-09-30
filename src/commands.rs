@@ -18,6 +18,7 @@ pub enum CommandId {
     Forget,
     Rename,
     Delete,
+    Copy,
     Help,
     Quit,
 }
@@ -196,6 +197,15 @@ pub const COMMANDS: &[CommandSpec] = &[
         arg: Arg::None,
         description: "Supprimer la conversation (Suppr dans la liste)",
         shortcut: None,
+        legacy_shortcut: None,
+    },
+    CommandSpec {
+        id: CommandId::Copy,
+        name: "copy",
+        aliases: &["copier"],
+        arg: Arg::Optional("[code [n]]"),
+        description: "Copier la dernière réponse, ou un de ses blocs de code",
+        shortcut: Some("Ctrl+Y"),
         legacy_shortcut: None,
     },
     CommandSpec {
@@ -385,7 +395,7 @@ mod tests {
         assert_eq!(names(&suggestions("/h")), vec!["history", "help"]);
         assert_eq!(
             names(&suggestions("/co")),
-            vec!["context", "compact", "collections"]
+            vec!["context", "compact", "collections", "copy"]
         );
         assert_eq!(
             names(&suggestions("/a")),

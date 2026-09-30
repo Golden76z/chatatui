@@ -738,6 +738,20 @@ impl App {
                 Vec::new()
             }
             Action::FileRead(result) => self.on_file_read(result),
+            Action::CopyLastReply => self.run_command(CommandId::Copy, ""),
+            Action::Copied { what, chars, how } => {
+                let chars = tokens::format_count(u64::try_from(chars).unwrap_or(u64::MAX));
+                self.status = Status::Info(match how {
+                    crate::clipboard::Copied::Tool(tool) => {
+                        format!("copié : {what} ({chars} caractères, via {tool})")
+                    }
+                    crate::clipboard::Copied::TerminalOnly => format!(
+                        "copie ({what}) envoyée au terminal (OSC 52) ; si rien n'est \
+                         copié, installez wl-clipboard ou xclip"
+                    ),
+                });
+                Vec::new()
+            }
             Action::NewConversation => self.new_conversation(),
             Action::ToggleSidebar => {
                 if self.sidebar.take().is_some() {
@@ -919,6 +933,7 @@ impl App {
             CommandId::Rag => self.choose_rag(arg.trim()),
             CommandId::Forget => self.forget(arg.trim()),
             CommandId::Rename => self.rename_current(arg.trim()),
+            CommandId::Copy => self.copy(arg.trim()),
             CommandId::Delete => self.delete_current(),
             CommandId::Collections => {
                 self.overlay = Some(Overlay::Collections { scroll: 0 });
@@ -1358,6 +1373,60 @@ impl App {
             item.title
         ));
         Vec::new()
+    }
+
+    /// `/copy [code [n]]`: copies the last reply, or its code block `n` (default: the last).
+    fn copy(&mut self, arg: &str) -> Vec<Effect> {
+        let reply = self.conversation.messages().iter().rev().find(|m| {
+            m.role == Role::Assistant
+                && !m.content.trim().is_empty()
+                && m.status != MessageStatus::Streaming
+        });
+        let Some(reply) = reply else {
+            self.status = Status::Error("aucune réponse à copier".into());
+            return Vec::new();
+        };
+        let words: Vec<&str> = arg.split_whitespace().collect();
+        let (text, what) = match words.as_slice() {
+            [] => (reply.content.clone(), "dernière réponse".to_owned()),
+            ["code" | "bloc", rest @ ..] => {
+                let blocks = crate::markdown::code_blocks(&reply.content);
+                let number = match rest {
+                    [] => blocks.len(),
+                    [n] => match n.parse::<usize>() {
+                        Ok(n) => n,
+                        Err(_) => {
+                            self.status = Status::Error("usage : /copy code [numéro]".into());
+                            return Vec::new();
+                        }
+                    },
+                    _ => {
+                        self.status = Status::Error("usage : /copy code [numéro]".into());
+                        return Vec::new();
+                    }
+                };
+                match number.checked_sub(1).and_then(|i| blocks.get(i)) {
+                    Some(block) => (block.clone(), format!("bloc de code #{number}")),
+                    None if blocks.is_empty() => {
+                        self.status =
+                            Status::Error("la dernière réponse n'a pas de bloc de code".into());
+                        return Vec::new();
+                    }
+                    None => {
+                        self.status = Status::Error(format!(
+                            "pas de bloc #{number} : la dernière réponse en a {}",
+                            blocks.len()
+                        ));
+                        return Vec::new();
+                    }
+                }
+            }
+            _ => {
+                self.status = Status::Error("usage : /copy ou /copy code [numéro]".into());
+                return Vec::new();
+            }
+        };
+        vec![Effect::Copy { text, what }]
     }
 
     /// `/rename <title>`: renames the current conversation.
@@ -3475,6 +3544,57 @@ mod tests {
         assert_eq!(
             app.update(Action::Submit),
             vec![Effect::Store(StoreRequest::DeleteConversation(id))]
+        );
+    }
+
+    #[test]
+    fn copy_the_last_reply_or_one_of_its_code_blocks() {
+        let mut app = app();
+        assert!(app.run_command(CommandId::Copy, "").is_empty());
+        assert_eq!(app.status, Status::Error("aucune réponse à copier".into()));
+
+        let job = send(&mut app, "Code ?");
+        token(
+            &mut app,
+            job.request_id,
+            "Deux :\n\n```rust\nfn a() {}\n```\n\n```sh\nls\n```\n",
+        );
+        assert!(
+            app.update(Action::CopyLastReply).is_empty(),
+            "still streaming"
+        );
+        llm(&mut app, job.request_id, LlmEvent::Done);
+
+        let copied = |effects: Vec<Effect>| match effects.as_slice() {
+            [Effect::Copy { text, what }] => (text.clone(), what.clone()),
+            other => panic!("{other:?}"),
+        };
+        let (text, what) = copied(app.update(Action::CopyLastReply));
+        assert!(text.starts_with("Deux :"));
+        assert_eq!(what, "dernière réponse");
+        assert_eq!(
+            copied(app.run_command(CommandId::Copy, "code")).0,
+            "ls\n",
+            "last block"
+        );
+        assert_eq!(
+            copied(app.run_command(CommandId::Copy, "code 1")),
+            ("fn a() {}\n".to_owned(), "bloc de code #1".to_owned())
+        );
+        assert!(app.run_command(CommandId::Copy, "code 3").is_empty());
+        assert_eq!(
+            app.status,
+            Status::Error("pas de bloc #3 : la dernière réponse en a 2".into())
+        );
+
+        app.update(Action::Copied {
+            what: "bloc de code #1".into(),
+            chars: 10,
+            how: crate::clipboard::Copied::Tool("wl-copy"),
+        });
+        assert_eq!(
+            app.status,
+            Status::Info("copié : bloc de code #1 (10 caractères, via wl-copy)".into())
         );
     }
 }

@@ -209,6 +209,9 @@ impl Runtime {
             }
             Event::App(AppEvent::Models(result)) => Some(Action::ModelsListed(result)),
             Event::App(AppEvent::FileRead(result)) => Some(Action::FileRead(result)),
+            Event::App(AppEvent::Copied { what, chars, how }) => {
+                Some(Action::Copied { what, chars, how })
+            }
             Event::App(AppEvent::PathCompletions {
                 partial,
                 candidates,
@@ -294,6 +297,17 @@ impl Runtime {
                     let result = files::read_attachment(&path);
                     // Fails only while shutting down.
                     let _ = sender.send(Event::App(AppEvent::FileRead(result)));
+                });
+            }
+            Effect::Copy { text, what } => {
+                // OSC 52 goes to the terminal right away, between two frames.
+                let _ = crate::clipboard::osc52(&mut std::io::stdout(), &text);
+                let sender = self.events.sender();
+                tokio::task::spawn_blocking(move || {
+                    let how = crate::clipboard::copy_with_tool(&text);
+                    let chars = text.chars().count();
+                    // Fails only while shutting down.
+                    let _ = sender.send(Event::App(AppEvent::Copied { what, chars, how }));
                 });
             }
             Effect::CompletePath(partial) => {

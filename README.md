@@ -155,6 +155,7 @@ run), or press `Ctrl+P` for the palette:
 | `/new` | New conversation (`Ctrl+N`) |
 | `/history` | Conversation list (`Ctrl+L`) |
 | `/rename <title>` | Rename the conversation |
+| `/copy [code [n]]` | Copy the last reply (`Ctrl+Y`), or its code block `n` (default: the last; blocks are numbered when there are several) |
 | `/delete` | Delete the conversation (run twice to confirm) |
 | `/model [provider] [model]` | Choose the model (`Ctrl+M` / `F2`), or switch directly: `/model qwen2.5:7b`, `/model claude`, `/model claude <model>` |
 | `/context` | Context window, tokens used (measured or estimated) and where they go |
@@ -182,6 +183,7 @@ Start a message with `//` to send text that begins with a slash.
 | `Ctrl+L` | Conversation list: `↑`/`↓` to choose, `Enter` to open, type to search every message (accents and case ignored), `Ctrl+R` to rename, `Suppr` twice to delete, `Esc` clears the search then closes |
 | `Ctrl+M` / `F2` | Choose the model (type to filter). `Ctrl+M` needs the kitty keyboard protocol |
 | `Ctrl+P` | Command palette |
+| `Ctrl+Y` | Copy the last reply |
 | `F1` | Help |
 | `PgUp` / `PgDn`, mouse wheel | Scroll the conversation |
 | `Up` / `Down` (empty input) | Scroll by one line |

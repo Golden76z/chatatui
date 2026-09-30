@@ -70,6 +70,7 @@ pub fn map_key(key: KeyEvent, context: KeyContext) -> Option<Action> {
         KeyCode::F(1) => return Some(Action::OpenHelp),
         KeyCode::Char('n') if ctrl => return Some(Action::NewConversation),
         KeyCode::Char('l') if ctrl => return Some(Action::ToggleSidebar),
+        KeyCode::Char('y') if ctrl => return Some(Action::CopyLastReply),
         _ => {}
     }
     if context.sidebar_open {

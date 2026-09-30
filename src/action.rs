@@ -77,6 +77,14 @@ pub enum Action {
     },
     /// A file requested with `/add` was read (or could not be).
     FileRead(Result<Attachment, String>),
+    /// Ctrl+Y: copy the last reply.
+    CopyLastReply,
+    /// Text was handed to the clipboard (`what` describes it).
+    Copied {
+        what: String,
+        chars: usize,
+        how: crate::clipboard::Copied,
+    },
     /// Progress of the indexing job.
     Index(IndexEvent),
     /// How the collections' folders differ from their index.
@@ -140,6 +148,8 @@ pub enum Effect {
     ReadFile(String),
     /// List the completions of a partial path.
     CompletePath(String),
+    /// Copy text to the clipboard; `what` describes it for the confirmation.
+    Copy { text: String, what: String },
     /// Index a folder (`root` as typed; `~` allowed, or a collection name to update it)
     /// into a collection, limited to `types` (`None`: the collection's current choice).
     StartIndex {

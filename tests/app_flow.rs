@@ -160,6 +160,13 @@ impl Harness {
                 Effect::ReadFile(path) => {
                     return Some(Action::FileRead(chatatui::files::read_attachment(&path)));
                 }
+                Effect::Copy { what, text } => {
+                    return Some(Action::Copied {
+                        what,
+                        chars: text.chars().count(),
+                        how: chatatui::clipboard::Copied::TerminalOnly,
+                    });
+                }
                 Effect::CompletePath(partial) => {
                     let candidates = chatatui::files::complete_path(&partial);
                     return Some(Action::PathCompleted {

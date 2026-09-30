@@ -35,13 +35,41 @@ pub fn render(markdown: &str, width: usize) -> Vec<Line<'static>> {
     let options =
         Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES | Options::ENABLE_TASKLISTS;
     let mut renderer = Renderer::new(width.max(1));
-    for (event, range) in Parser::new_ext(markdown, options).into_offset_iter() {
+    let events: Vec<_> = Parser::new_ext(markdown, options)
+        .into_offset_iter()
+        .collect();
+    // Blocks are numbered (for `/copy code N`) when there are several.
+    renderer.number_code = events
+        .iter()
+        .filter(|(event, _)| matches!(event, Event::Start(Tag::CodeBlock(_))))
+        .count()
+        > 1;
+    for (event, range) in events {
         if let Event::Start(Tag::CodeBlock(_)) = &event {
             renderer.code_closed = is_closed_fence(&markdown[range.clone()]);
         }
         renderer.event(event);
     }
     renderer.finish()
+}
+
+/// The code blocks of `markdown`, in order (their text, without the fences).
+pub fn code_blocks(markdown: &str) -> Vec<String> {
+    let mut blocks = Vec::new();
+    let mut current: Option<String> = None;
+    for event in Parser::new_ext(markdown, Options::empty()) {
+        match event {
+            Event::Start(Tag::CodeBlock(_)) => current = Some(String::new()),
+            Event::Text(text) => {
+                if let Some(block) = &mut current {
+                    block.push_str(&text);
+                }
+            }
+            Event::End(TagEnd::CodeBlock) => blocks.extend(current.take()),
+            _ => {}
+        }
+    }
+    blocks
 }
 
 /// `true` if a fenced code block's source ends with its closing fence (a block still being
@@ -95,6 +123,10 @@ struct Renderer {
     pending_blank: bool,
     /// The current code block has its closing fence (its highlighting can be cached).
     code_closed: bool,
+    /// Show each code block's number in its label.
+    number_code: bool,
+    /// Code blocks rendered so far.
+    code_count: usize,
 }
 
 impl Renderer {
@@ -111,6 +143,8 @@ impl Renderer {
             link: None,
             pending_blank: false,
             code_closed: false,
+            number_code: false,
+            code_count: 0,
         }
     }
 
@@ -436,8 +470,15 @@ impl Renderer {
             .saturating_sub(self.prefix_width() + display_width(GUTTER))
             .max(1);
         let lang = code.lang.trim();
-        if !lang.is_empty() {
-            let label = Span::styled(lang.to_owned(), dim().add_modifier(Modifier::ITALIC));
+        self.code_count += 1;
+        let number = self.number_code.then(|| format!("#{}", self.code_count));
+        let label = match (lang.is_empty(), number) {
+            (false, Some(number)) => Some(format!("{lang} · {number}")),
+            (false, None) => Some(lang.to_owned()),
+            (true, number) => number,
+        };
+        if let Some(label) = label {
+            let label = Span::styled(label, dim().add_modifier(Modifier::ITALIC));
             self.emit(vec![gutter(), label]);
         }
         let highlighted = if self.code_closed {
@@ -713,5 +754,25 @@ Fin."#;
     #[test]
     fn empty_input() {
         assert!(render("", 80).is_empty());
+    }
+
+    #[test]
+    fn code_blocks_are_extracted_and_numbered_when_several() {
+        let markdown = "Voici :\n\n```rust\nfn a() {}\n```\n\npuis\n\n    indenté\n\n~~~\nb\n~~~\n";
+        assert_eq!(
+            code_blocks(markdown),
+            vec!["fn a() {}\n", "indenté\n", "b\n"]
+        );
+        let text: Vec<String> = render(markdown, 40)
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert!(text.contains(&"▎ rust · #1".to_owned()), "{text:?}");
+        assert!(text.contains(&"▎ #2".to_owned()));
+        let single: Vec<String> = render("```rust\nx\n```", 40)
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert_eq!(single[0], "▎ rust", "a single block is not numbered");
     }
 }
