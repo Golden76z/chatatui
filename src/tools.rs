@@ -16,6 +16,7 @@ use crate::{
 pub const READ_FILE: &str = "read_file";
 pub const LIST_DIR: &str = "list_dir";
 pub const SEARCH_DOCUMENTS: &str = "search_documents";
+pub const FETCH_URL: &str = "fetch_url";
 
 /// Characters of a file given to the model at most.
 const MAX_FILE_CHARS: usize = 60_000;
@@ -36,6 +37,11 @@ pub fn specs() -> Vec<ToolSpec> {
             description: "List the files and folders of a directory on the user's computer \
                           (folders end with /). Paths may start with ~.",
             parameters: r#"{"type":"object","properties":{"path":{"type":"string","description":"Directory path"}},"required":["path"]}"#,
+        },
+        ToolSpec {
+            name: FETCH_URL,
+            description: "Read a web page (http or https) and return its text.",
+            parameters: r#"{"type":"object","properties":{"url":{"type":"string","description":"Page address"}},"required":["url"]}"#,
         },
         ToolSpec {
             name: SEARCH_DOCUMENTS,
@@ -70,6 +76,11 @@ struct PathArgs {
 }
 
 #[derive(Deserialize)]
+struct UrlArgs {
+    url: String,
+}
+
+#[derive(Deserialize)]
 struct SearchArgs {
     query: String,
     collection: Option<String>,
@@ -83,6 +94,10 @@ pub fn describe(call: &ToolCall) -> String {
         LIST_DIR => serde_json::from_str::<PathArgs>(&call.arguments).map_or_else(
             |_| "lister un dossier".into(),
             |a| format!("lister {}", a.path),
+        ),
+        FETCH_URL => serde_json::from_str::<UrlArgs>(&call.arguments).map_or_else(
+            |_| "ouvrir une page web".into(),
+            |a| format!("ouvrir {}", a.url),
         ),
         SEARCH_DOCUMENTS => serde_json::from_str::<SearchArgs>(&call.arguments).map_or_else(
             |_| "chercher dans les documents".into(),
@@ -134,6 +149,19 @@ pub async fn run(
         },
         LIST_DIR => match serde_json::from_str::<PathArgs>(&call.arguments) {
             Ok(args) => list_dir(args.path).await,
+            Err(e) => ToolOutput::error(format!("arguments invalides : {e}")),
+        },
+        FETCH_URL => match serde_json::from_str::<UrlArgs>(&call.arguments) {
+            Ok(args) => match crate::web::fetch(&args.url).await {
+                Ok(page) => ToolOutput {
+                    ok: true,
+                    text: match page.title {
+                        Some(title) => format!("# {title}\n\n{}", page.text),
+                        None => page.text,
+                    },
+                },
+                Err(error) => ToolOutput::error(error),
+            },
             Err(e) => ToolOutput::error(format!("arguments invalides : {e}")),
         },
         SEARCH_DOCUMENTS => match serde_json::from_str::<SearchArgs>(&call.arguments) {
@@ -282,6 +310,10 @@ mod tests {
             "chercher « traits » dans « cours »"
         );
         assert_eq!(describe(&call("rm", "{}")), "outil inconnu : rm");
+        assert_eq!(
+            describe(&call(FETCH_URL, r#"{"url":"https://doc.rust-lang.org"}"#)),
+            "ouvrir https://doc.rust-lang.org"
+        );
     }
 
     #[test]

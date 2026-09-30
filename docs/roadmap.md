@@ -13,15 +13,9 @@
 - **J22**: GitHub CI and release binaries.
 - **J23**: input history (`Ctrl+↑` / `Ctrl+↓`), generation speed, cost of cloud
   conversations.
+- **J24**: web pages — `fetch_url` tool and `/add https://…`.
 
 ## Next
-
-### J24 — Web pages
-
-- **`fetch_url` tool**: the model may read a web page (HTML turned into text, size
-  limited), confirmed like the other tools; `/add https://…` attaches a page directly.
-
-### Later
 
 - Windows support (clipboard through `clip.exe`, paths, CI job).
 - Conversation branches: keep the replaced messages of `/edit` and `/retry` and switch

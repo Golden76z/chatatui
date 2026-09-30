@@ -329,6 +329,25 @@ impl Runtime {
                     let _ = sender.send(Event::App(AppEvent::Models(results)));
                 });
             }
+            Effect::ReadFile(path)
+                if path.starts_with("http://") || path.starts_with("https://") =>
+            {
+                let sender = self.events.sender();
+                tokio::spawn(async move {
+                    let result = crate::web::fetch(&path)
+                        .await
+                        .map(|page| files::Attachment {
+                            content: match page.title {
+                                Some(title) => format!("# {title}\n\n{}", page.text),
+                                None => page.text,
+                            },
+                            source: path,
+                            image: None,
+                        });
+                    // Fails only while shutting down.
+                    let _ = sender.send(Event::App(AppEvent::FileRead(result)));
+                });
+            }
             Effect::ReadFile(path) => {
                 let sender = self.events.sender();
                 tokio::task::spawn_blocking(move || {

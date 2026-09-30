@@ -1981,6 +1981,11 @@ impl App {
             return self.save(id).into_iter().collect();
         }
         let estimate = tokens::estimate(&attachment.content);
+        let what = if attachment.source.starts_with("http") {
+            "page jointe"
+        } else {
+            "fichier joint"
+        };
         let id = self
             .conversation
             .push_attachment(attachment.source, attachment.content);
@@ -1994,7 +1999,7 @@ impl App {
             ))
         } else {
             Status::Info(format!(
-                "fichier joint : {name} (≈ {} tokens)",
+                "{what} : {name} (≈ {} tokens)",
                 tokens::format_count(estimate)
             ))
         };
