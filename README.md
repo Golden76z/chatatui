@@ -27,16 +27,17 @@ Claude is reached through the native Anthropic Messages API.
 
 ## Install
 
-- **Binaries**: Linux (x86_64, arm64) and macOS (Apple silicon) archives are attached to
-  each [release](https://github.com/Golden76z/chatatui/releases); unpack and run
-  `chatatui`.
+- **Binaries**: Linux (x86_64, arm64), macOS (Apple silicon) and Windows (x86_64)
+  archives are attached to each
+  [release](https://github.com/Golden76z/chatatui/releases); unpack and run `chatatui`
+  (`chatatui.exe` on Windows, in Windows Terminal).
 - **From source**: `cargo install --git https://github.com/Golden76z/chatatui --locked`
   (Rust 1.88 or newer, and a C compiler: SQLite and the TLS backend are compiled from
   source).
 
 You also need a model server, e.g. `ollama serve` and `ollama pull llama3.2`. Optional:
 `tesseract-ocr` and `poppler-utils` to index scanned PDFs, `wl-clipboard` or `xclip` for
-`/copy`.
+`/copy` (Windows and WSL use `clip.exe`, macOS `pbcopy`).
 
 ## Usage
 
@@ -45,7 +46,9 @@ chatatui            # or, from a clone: cargo run --release
 ```
 
 On first launch a commented configuration file is created in the platform config
-directory (`~/.config/chatatui/config.toml` on Linux):
+directory: `~/.config/chatatui/config.toml` on Linux,
+`~/Library/Application Support/chatatui/config.toml` on macOS,
+`%APPDATA%\chatatui\config\config.toml` on Windows:
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -118,7 +121,8 @@ base_url = "http://localhost:1234/v1"
 Older configuration files (with `base_url` / `model` / `api_key` at the top level) still
 work: those keys configure the `ollama` provider.
 
-Conversations are stored in `~/.local/share/chatatui/chatatui.db`.
+Conversations are stored in `~/.local/share/chatatui/chatatui.db` (macOS: next to the
+configuration; Windows: `%APPDATA%\chatatui\data\chatatui.db`).
 
 ### Document indexing (RAG)
 
@@ -253,7 +257,8 @@ Start a message with `//` to send text that begins with a slash.
 | `Ctrl+C` / `Ctrl+Q` | Quit |
 
 Terminals with the kitty keyboard protocol (kitty, WezTerm, Ghostty, foot, recent
-Alacritty) get `Shift+Enter` and `Ctrl+M`; elsewhere use `Alt+Enter` and `F2`. The status
+Alacritty) and the Windows console get `Shift+Enter` and `Ctrl+M`; elsewhere use
+`Alt+Enter` and `F2`. The status
 bar shows the keys that work in your terminal.
 
 ## Architecture

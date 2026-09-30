@@ -16,8 +16,8 @@
 - **J24**: web pages — `fetch_url` tool and `/add https://…`.
 - **J25**: versions — `/edit` and `/retry` keep what they replace, `Alt+←` / `Alt+→`
   switch between versions.
+- **J26**: Windows — `clip.exe`, Windows paths, CI job and release binary.
 
 ## Next
 
-- Windows support (clipboard through `clip.exe`, paths, CI job).
 - Re-ranking with a local cross-encoder when the server has no `/v1/rerank`.

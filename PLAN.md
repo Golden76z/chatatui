@@ -131,6 +131,7 @@ tests/      app_flow.rs http_clients.rs fixtures/*.sse
 | J23 ✅ | Input history (Ctrl+↑/↓, all conversations), generation speed (t/s live, last reply in `/context`), cost of cloud conversations (`price_input` / `price_output`) |
 | J24 ✅ | Web pages: `fetch_url` tool and `/add https://…` (light HTML→text converter, PDFs via the indexing extractor, 5 MB / 60k characters limits) |
 | J25 ✅ | Versions: `/edit` and `/retry` keep the replaced messages (schema v10 `message_tails`), `‹ n/total ›` marker, Alt+←/→ to switch; the version shown is what gets sent |
+| J26 ✅ | Windows: `clip.exe` (also in WSL, UTF-16), `\` paths in `/add` / `/index` completion, full key reporting in the Windows console, CI job and `.zip` release; tests pass under Wine |
 
 Continuous integration (`.github/workflows/ci.yml`) runs the same checks on every push;
 pushing a `v*` tag builds release binaries (`release.yml`).

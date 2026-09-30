@@ -341,7 +341,7 @@ mod tests {
         let root = dir.path().display().to_string();
 
         let listed = run(
-            &call(LIST_DIR, &format!(r#"{{"path":"{root}"}}"#)),
+            &call(LIST_DIR, &serde_json::json!({ "path": root }).to_string()),
             &NoContext,
             None,
         )
@@ -354,14 +354,20 @@ mod tests {
             }
         );
         let read = run(
-            &call(READ_FILE, &format!(r#"{{"path":"{root}/notes.md"}}"#)),
+            &call(
+                READ_FILE,
+                &serde_json::json!({ "path": dir.path().join("notes.md") }).to_string(),
+            ),
             &NoContext,
             None,
         )
         .await;
         assert_eq!(read.text, "# Notes");
         let secret = run(
-            &call(READ_FILE, &format!(r#"{{"path":"{root}/.env"}}"#)),
+            &call(
+                READ_FILE,
+                &serde_json::json!({ "path": dir.path().join(".env") }).to_string(),
+            ),
             &NoContext,
             None,
         )

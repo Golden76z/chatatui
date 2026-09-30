@@ -57,12 +57,19 @@ fn read_image(source: &str, path: &Path, media_type: &str) -> Result<Attachment,
     })
 }
 
-/// Expands a leading `~` to the home directory.
+/// Whether `c` separates path components here: `/`, and also `\\` on Windows.
+pub fn is_separator(c: char) -> bool {
+    c == '/' || (cfg!(windows) && c == '\\')
+}
+
+/// Expands a leading `~` to the home directory (`~/…`, or `~\\…` on Windows).
 pub fn expand_home(path: &str) -> PathBuf {
-    if (path == "~" || path.starts_with("~/"))
+    let rest = path.strip_prefix('~');
+    if let Some(rest) = rest
+        && (rest.is_empty() || rest.starts_with(is_separator))
         && let Some(home) = directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf())
     {
-        return home.join(path.trim_start_matches('~').trim_start_matches('/'));
+        return home.join(rest.trim_start_matches(is_separator));
     }
     PathBuf::from(path)
 }
@@ -107,13 +114,16 @@ fn io_message(error: &std::io::Error) -> String {
 }
 
 /// Completions of a partial path: entries of its directory starting with its last
-/// component, sorted, directories suffixed with `/`. Hidden files are listed only when the
-/// partial name starts with a dot.
+/// component, sorted, directories suffixed with the last separator typed (`/` by
+/// default, `\\` possible on Windows). Hidden files are listed only when the partial name
+/// starts with a dot.
 pub fn complete_path(partial: &str) -> Vec<String> {
-    let (dir_part, name_part) = match partial.rfind('/') {
+    let (dir_part, name_part) = match partial.rfind(is_separator) {
         Some(slash) => (&partial[..=slash], &partial[slash + 1..]),
         None => ("", partial),
     };
+    // Directories end with the separator the partial path last used.
+    let separator = dir_part.chars().last().unwrap_or('/');
     let dir = if dir_part.is_empty() {
         PathBuf::from(".")
     } else {
@@ -133,7 +143,11 @@ pub fn complete_path(partial: &str) -> Vec<String> {
             }
             let is_dir = entry.file_type().is_ok_and(|t| t.is_dir())
                 || fs::metadata(dir.join(&name)).is_ok_and(|m| m.is_dir());
-            Some(format!("{dir_part}{name}{}", if is_dir { "/" } else { "" }))
+            let mut candidate = format!("{dir_part}{name}");
+            if is_dir {
+                candidate.push(separator);
+            }
+            Some(candidate)
         })
         .collect();
     candidates.sort();
@@ -291,7 +305,27 @@ mod tests {
     #[test]
     fn home_is_expanded() {
         assert!(!expand_home("~/x").starts_with("~"));
+        assert!(!expand_home("~").starts_with("~"));
         assert_eq!(expand_home("rel/x"), PathBuf::from("rel/x"));
+        assert_eq!(expand_home("~x"), PathBuf::from("~x"), "another user");
+        if cfg!(windows) {
+            assert!(!expand_home("~\\x").starts_with("~"));
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn completes_windows_paths() {
+        let dir = dir();
+        let base = format!("{}\\", dir.path().display());
+        assert_eq!(
+            complete_path(&format!("{base}s")),
+            vec![format!("{base}sub\\")]
+        );
+        assert_eq!(
+            complete_path(&format!("{base}notes.")),
+            vec![format!("{base}notes.md")]
+        );
     }
 
     #[test]

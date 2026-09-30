@@ -25,6 +25,8 @@ jobs:
             target: aarch64-unknown-linux-gnu
           - os: macos-latest
             target: aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -33,12 +35,23 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release --locked --target ${{ matrix.target }}
       - name: Package
+        if: runner.os != 'Windows'
         run: |
           name="chatatui-${GITHUB_REF_NAME}-${{ matrix.target }}"
           mkdir "$name"
           cp "target/${{ matrix.target }}/release/chatatui" README.md LICENSE "$name/"
           tar -czf "$name.tar.gz" "$name"
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          name="chatatui-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          mkdir "$name"
+          cp "target/${{ matrix.target }}/release/chatatui.exe" README.md LICENSE "$name/"
+          7z a "$name.zip" "$name"
       - uses: softprops/action-gh-release@v2
         with:
-          files: chatatui-*.tar.gz
+          files: |
+            chatatui-*.tar.gz
+            chatatui-*.zip
           generate_release_notes: true

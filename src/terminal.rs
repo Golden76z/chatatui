@@ -53,7 +53,9 @@ pub fn init(mouse_capture: bool) -> Result<Tty> {
 
     Ok(Tty {
         terminal,
-        keyboard_enhanced,
+        // The Windows console reports every key with its modifiers (Shift+Enter, Ctrl+M
+        // apart from Enter) without the kitty protocol.
+        keyboard_enhanced: keyboard_enhanced || cfg!(windows),
     })
 }
 

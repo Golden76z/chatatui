@@ -1215,10 +1215,10 @@ impl App {
                     .iter()
                     .take(6)
                     .map(|c| {
-                        let trimmed = c.trim_end_matches('/');
+                        let trimmed = c.trim_end_matches(files::is_separator);
                         let name = files::file_name(trimmed);
-                        if c.ends_with('/') {
-                            format!("{name}/")
+                        if c.ends_with(files::is_separator) {
+                            format!("{name}{}", &c[trimmed.len()..])
                         } else {
                             name
                         }
@@ -1616,7 +1616,7 @@ impl App {
         };
         let (root, name) = match args.as_slice() {
             [root] => {
-                let trimmed = root.trim_end_matches('/');
+                let trimmed = root.trim_end_matches(files::is_separator);
                 (
                     root.clone(),
                     files::file_name(if trimmed.is_empty() { root } else { trimmed }),
@@ -1637,7 +1637,10 @@ impl App {
             );
             return Vec::new();
         }
-        if name.is_empty() || name.contains('/') || matches!(name.as_str(), "~" | "." | "..") {
+        if name.is_empty()
+            || name.contains(files::is_separator)
+            || matches!(name.as_str(), "~" | "." | "..")
+        {
             self.status = Status::Error("donnez un nom : /index <dossier> <nom>".into());
             return Vec::new();
         }

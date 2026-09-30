@@ -1011,7 +1011,7 @@ async fn the_model_reads_a_file_once_allowed() {
     let call = ToolCall {
         id: "call_1".into(),
         name: "read_file".into(),
-        arguments: format!(r#"{{"path":"{}"}}"#, file.display()),
+        arguments: serde_json::json!({ "path": file }).to_string(),
     };
     let llm = Arc::new(MockLlmClient::new([
         MockReply::ToolCalls(vec!["Je regarde.".into()], vec![call.clone()]),
