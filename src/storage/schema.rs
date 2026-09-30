@@ -70,6 +70,10 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX rag_chunks_by_document ON rag_chunks (document_id);
     ALTER TABLE conversations ADD COLUMN rag_collection TEXT;
     "#,
+    // v5: passages cited by assistant replies (JSON list).
+    r#"
+    ALTER TABLE messages ADD COLUMN citations TEXT;
+    "#,
 ];
 
 /// Latest schema version.

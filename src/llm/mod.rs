@@ -212,6 +212,12 @@ pub enum LlmEvent {
     Token(String),
     /// Token counts measured by the server.
     Usage(Usage),
+    /// Passages retrieved for this reply (sent before the first token). They are numbered
+    /// in the prompt from `first_number` on.
+    Retrieved {
+        first_number: usize,
+        chunks: Vec<crate::context::ContextChunk>,
+    },
     /// The reply is complete.
     Done,
     /// Generation failed; user-facing message.

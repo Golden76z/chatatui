@@ -116,7 +116,7 @@ tests/      app_flow.rs http_clients.rs fixtures/*.sse
 | J8 ✅ | Context visibility: measured/estimated tokens, context window, gauge, `/context`, `/prompt` |
 | J9 ✅ | Acting on context: `/add <file>`, `/clear`, `/compact` |
 | J10 ✅ | RAG indexing: `/index <folder> [name]` (md, text, code, PDF, docx, odt), incremental, progress + Esc, `/collections` |
-| J11 | Retrieval: `/rag <collection>\|off` per conversation, top-k cosine within a token budget, sources under replies, shown in `/prompt` and `/context` |
+| J11 ✅ | Retrieval: `/rag <collection>\|off` per conversation, top-k cosine within a token budget, sources under replies, shown in `/prompt` and `/context` |
 | J12 | Hybrid search (FTS5 + vectors), change detection at startup, file-type filters, deleting a collection |
 
 Each milestone ends with `cargo fmt`, `cargo clippy --all-targets -- -D warnings`,

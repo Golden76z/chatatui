@@ -126,12 +126,25 @@ pub fn lines(app: &App, width: usize) -> Vec<Line<'static>> {
         .filter(|m| m.role == Role::Summary && m.status == MessageStatus::Complete)
         .map(|m| tokens::estimate(&m.content))
         .sum();
-    // Attached files and the summary travel inside the system message: count them apart.
+    let retrieved = app
+        .retrieved
+        .as_ref()
+        .map_or(&[][..], |r| r.chunks.as_slice());
+    let retrieved_tokens: u64 = retrieved.iter().map(|c| tokens::estimate(&c.text)).sum();
+    // Attached files, passages and the summary travel inside the system message: count
+    // them apart.
     lines.push(row(
         "Prompt système".into(),
-        system_tokens.saturating_sub(attached_tokens + summary_tokens),
+        system_tokens.saturating_sub(attached_tokens + summary_tokens + retrieved_tokens),
         "",
     ));
+    if app.rag_collection.is_some() || !retrieved.is_empty() {
+        lines.push(row(
+            format!("Extraits RAG ({})", retrieved.len()),
+            retrieved_tokens,
+            "  dernière réponse",
+        ));
+    }
     lines.push(row(
         format!("Fichiers joints ({})", attachments.len()),
         attached_tokens,
@@ -145,6 +158,47 @@ pub fn lines(app: &App, width: usize) -> Vec<Line<'static>> {
         history_tokens,
         "",
     ));
+
+    // Document search.
+    if let Some(collection) = &app.rag_collection {
+        lines.push(Line::default());
+        lines.push(Line::styled(" Documents (/rag)", title));
+        let place = if app.is_local() {
+            Span::styled("  (local)", dim)
+        } else {
+            Span::styled(
+                "  ☁ les extraits sont envoyés au fournisseur",
+                Style::default().fg(Color::Yellow),
+            )
+        };
+        lines.push(Line::from(vec![
+            label("Collection"),
+            Span::raw(collection.clone()),
+            place,
+        ]));
+        lines.push(Line::from(vec![
+            label("Par réponse"),
+            Span::raw(format!(
+                "{} extraits au plus, ≈ {} tokens",
+                app.rag.top_k,
+                format_count(app.rag.context_tokens)
+            )),
+        ]));
+        if let Some(retrieved) = &app.retrieved {
+            for (i, chunk) in retrieved.chunks.iter().enumerate() {
+                let head = format!("   [{}] ", retrieved.first_number + i);
+                let tail = format!("  ≈ {}", format_count(tokens::estimate(&chunk.text)));
+                let room = width
+                    .saturating_sub(display_width(&head) + display_width(&tail))
+                    .max(8);
+                lines.push(Line::from(vec![
+                    Span::raw(head),
+                    Span::raw(shorten(&chunk.label(), room)),
+                    Span::styled(tail, dim),
+                ]));
+            }
+        }
+    }
 
     // Longest messages.
     let mut messages: Vec<_> = app

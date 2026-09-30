@@ -1,0 +1,18 @@
+---
+source: src/ui/mod.rs
+expression: "draw(&mut app, 70, 14).backend()"
+---
+" ▌ Vous                                                               "
+" Que dit le cours sur l'ownership ?                                   "
+"                                                                      "
+" ▌ Assistant                                                          "
+" Chaque valeur a un seul propriétaire [1], vu en séance 1 [2].        "
+" Sources : [1] cours/ch04-ownership.pdf p. 12 · [2] plan.docx §       "
+" Séance 1 : ownership                                                 "
+"                                                                      "
+"                                                                      "
+"                                                                      "
+"╭ Message ───────────────────────────────────────────────────────────╮"
+"│ Écrivez votre message…                                             │"
+"╰────────────────────────────────────────────────────────────────────╯"
+" ● Prêt │ Ollama › llama3.2 │ ctx ≈105 │ ⌕ rust  / commandes · Ctrl+P "

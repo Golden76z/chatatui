@@ -11,13 +11,13 @@ use crate::{
     action::{Action, Effect},
     app::App,
     config::Config,
-    context::NoContext,
     event::{AppEvent, Event, EventHandler},
     files, keymap,
     llm::{self, ProviderModels, RequestId, stream_task},
     rag::{
         embed::{Embedder, OpenAiEmbedder},
         indexer::{self, IndexEvent, IndexRequest},
+        retrieve::{RagContext, Selection},
     },
     storage::worker::{Location, StoreHandle},
     ui,
@@ -105,11 +105,15 @@ impl Runtime {
         let clients =
             llm::build_clients(&providers, Duration::from_secs(config.connect_timeout_secs));
         let provider_order = providers.iter().map(|p| p.id.clone()).collect();
+        let rag = RagBackend::new(&config, &providers, &database);
         let backends = stream_task::Backends {
             clients,
-            context: Arc::new(NoContext),
+            context: Arc::new(RagContext::new(
+                rag.embedder.clone(),
+                rag.database.clone(),
+                Selection::from(&config.rag),
+            )),
         };
-        let rag = RagBackend::new(&config, &providers, &database);
         let events = EventHandler::new();
         let sender = events.sender();
         let store = StoreHandle::spawn(database, move |event| {

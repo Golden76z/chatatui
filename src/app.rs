@@ -24,7 +24,7 @@ use crate::{
     action::{Action, Effect},
     commands::{self, Arg, CommandId, CommandSpec, Parsed},
     config::Config,
-    context::Context,
+    context::{Context, ContextChunk},
     files::{self, Attachment},
     keymap::KeyContext,
     layout,
@@ -39,8 +39,8 @@ use crate::{
         store::CollectionSummary,
     },
     state::{
-        Conversation, MessageId, MessageStatus, ModelPicker, Overlay, Palette, Role, ScrollState,
-        Sidebar, Status,
+        Citation, Conversation, MessageId, MessageStatus, ModelPicker, Overlay, Palette, Role,
+        ScrollState, Sidebar, Status,
     },
     storage::{ConversationId, ConversationRecord, StoreEvent, StoreRequest, StoredConversation},
     tokens,
@@ -155,6 +155,14 @@ pub struct IndexProgress {
     pub current: String,
 }
 
+/// Passages given to the model for the last reply.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Retrieved {
+    /// Prompt number of the first passage (attached files come first).
+    pub first_number: usize,
+    pub chunks: Vec<ContextChunk>,
+}
+
 /// The whole application state.
 #[derive(Debug)]
 pub struct App {
@@ -207,6 +215,12 @@ pub struct App {
     pub last_index: Option<IndexReport>,
     /// Indexing settings (shown in `/collections`).
     pub rag: RagConfig,
+    /// Collection searched for each reply of this conversation (`/rag`).
+    pub rag_collection: Option<String>,
+    /// Collection asked for with `/rag`, applied once the collection list confirms it.
+    pending_rag: Option<String>,
+    /// Passages retrieved for the last reply of this conversation.
+    pub retrieved: Option<Retrieved>,
     /// Token counts of the last completed request of this conversation.
     pub measured: Option<Measured>,
     /// Token counts received for the running request.
@@ -261,6 +275,9 @@ impl App {
             indexing: None,
             last_index: None,
             rag: config.rag.clone(),
+            rag_collection: None,
+            pending_rag: None,
+            retrieved: None,
             request_usage: Usage::default(),
             session_seed: 0,
             next_conversation: 0,
@@ -302,12 +319,20 @@ impl App {
             .map(|tokens| (*tokens, WindowSource::Server))
     }
 
-    /// The messages the next request would send (same builder as the real request; the
-    /// context provider's chunks are only known when the request runs).
+    /// The messages the next request would send (same builder as the real request). The
+    /// passages retrieved for the next question are only known when it is sent: those of
+    /// the last reply stand in for them.
     pub fn prompt(&self) -> Vec<ChatMessage> {
+        let context = Context {
+            chunks: self
+                .retrieved
+                .as_ref()
+                .map(|r| r.chunks.clone())
+                .unwrap_or_default(),
+        };
         prompt::build_messages(
             &self.system_prompt,
-            &Context::default(),
+            &context,
             self.conversation.context_messages(),
         )
     }
@@ -756,6 +781,7 @@ impl App {
             CommandId::Clear => self.clear_context(),
             CommandId::Compact => self.compact(),
             CommandId::Index => self.start_index(arg),
+            CommandId::Rag => self.choose_rag(arg.trim()),
             CommandId::Collections => {
                 self.overlay = Some(Overlay::Collections { scroll: 0 });
                 self.refresh_collections()
@@ -893,6 +919,10 @@ impl App {
             model: self.model.clone(),
             system_prompt: self.system_prompt.clone(),
             history: self.conversation.context_messages().to_vec(),
+            rag_collection: match kind {
+                JobKind::Reply => self.rag_collection.clone(),
+                JobKind::Summary => None,
+            },
         };
         let message_id = self.conversation.push(role, "", MessageStatus::Streaming);
         // Sending a message brings the view back to the latest content.
@@ -1003,6 +1033,77 @@ impl App {
         }
     }
 
+    /// `/rag [collection|off]`: shows, changes or turns off the collection searched for
+    /// each reply. A new name is checked against the collection list first.
+    fn choose_rag(&mut self, arg: &str) -> Vec<Effect> {
+        match arg {
+            "" => {
+                self.status = Status::Info(match &self.rag_collection {
+                    Some(name) => {
+                        format!("réponses à partir de « {name} » (/rag off pour arrêter)")
+                    }
+                    None => "pas de collection : /rag <collection> (voir /collections)".into(),
+                });
+                Vec::new()
+            }
+            "off" | "non" | "aucune" => {
+                if self.rag_collection.is_none() {
+                    self.status = Status::Info("aucune collection utilisée".into());
+                    return Vec::new();
+                }
+                self.status = Status::Info("réponses sans documents".into());
+                self.set_rag(None)
+            }
+            name => {
+                self.pending_rag = Some(name.to_owned());
+                vec![Effect::Store(StoreRequest::ListCollections)]
+            }
+        }
+    }
+
+    /// Uses `name` if it is one of `collections`.
+    fn apply_rag(&mut self, name: &str, collections: &[CollectionSummary]) -> Vec<Effect> {
+        let Some(found) = collections.iter().find(|c| c.name == name) else {
+            let known: Vec<&str> = collections.iter().map(|c| c.name.as_str()).collect();
+            self.status = Status::Error(if known.is_empty() {
+                format!(
+                    "collection « {name} » introuvable : indexez d'abord un dossier avec /index"
+                )
+            } else {
+                format!(
+                    "collection « {name} » introuvable (collections : {})",
+                    known.join(", ")
+                )
+            });
+            return Vec::new();
+        };
+        let cloud = if self.is_local() {
+            ""
+        } else {
+            " ☁ les extraits seront envoyés au fournisseur"
+        };
+        self.status = Status::Info(format!(
+            "réponses à partir de « {name} » ({} documents){cloud}",
+            found.documents
+        ));
+        self.set_rag(Some(name.to_owned()))
+    }
+
+    fn set_rag(&mut self, collection: Option<String>) -> Vec<Effect> {
+        if self.rag_collection == collection {
+            return Vec::new();
+        }
+        self.rag_collection = collection.clone();
+        self.retrieved = None;
+        match &self.conversation_id {
+            Some(id) => vec![Effect::Store(StoreRequest::SetRag {
+                id: id.clone(),
+                collection,
+            })],
+            None => Vec::new(),
+        }
+    }
+
     /// Asks for the collection list when the `/collections` popup is open.
     fn refresh_collections(&self) -> Vec<Effect> {
         if matches!(self.overlay, Some(Overlay::Collections { .. })) {
@@ -1097,6 +1198,7 @@ impl App {
     fn move_context_start(&mut self, start: u64) -> Vec<Effect> {
         self.conversation.set_context_start(start);
         self.measured = None;
+        self.retrieved = None;
         match &self.conversation_id {
             Some(id) => vec![Effect::Store(StoreRequest::SetContextStart {
                 id: id.clone(),
@@ -1131,6 +1233,7 @@ impl App {
             title: self.conversation_title.clone().unwrap_or_default(),
             provider: self.provider.clone(),
             model: self.model.clone(),
+            rag_collection: self.rag_collection.clone(),
         };
         Some(Effect::Store(StoreRequest::SaveMessage {
             conversation,
@@ -1175,6 +1278,28 @@ impl App {
                 self.transcript.invalidate(generation.message_id);
                 Vec::new()
             }
+            LlmEvent::Retrieved {
+                first_number,
+                chunks,
+            } => {
+                if let Some(message) = self.conversation.get_mut(generation.message_id) {
+                    message.citations = chunks
+                        .iter()
+                        .enumerate()
+                        .map(|(i, chunk)| Citation {
+                            number: first_number + i,
+                            path: chunk.source.clone(),
+                            location: chunk.location.clone(),
+                        })
+                        .collect();
+                }
+                self.transcript.invalidate(generation.message_id);
+                self.retrieved = Some(Retrieved {
+                    first_number,
+                    chunks,
+                });
+                Vec::new()
+            }
             LlmEvent::Usage(usage) => {
                 self.request_usage = Usage {
                     input_tokens: usage.input_tokens.or(self.request_usage.input_tokens),
@@ -1201,6 +1326,9 @@ impl App {
                     });
                 }
                 self.status = Status::Ready;
+                if let Some(message) = self.conversation.get_mut(generation.message_id) {
+                    keep_cited(message);
+                }
                 let mut effects: Vec<Effect> = self
                     .finish_generation(MessageStatus::Complete)
                     .into_iter()
@@ -1228,8 +1356,12 @@ impl App {
             }
             StoreEvent::Loaded(stored) => self.load(stored),
             StoreEvent::Collections { collections, now } => {
+                let effects = match self.pending_rag.take() {
+                    Some(name) => self.apply_rag(&name, &collections),
+                    None => Vec::new(),
+                };
                 self.collections = Some((collections, now));
-                Vec::new()
+                effects
             }
             StoreEvent::Error(error) => {
                 if let Some(sidebar) = &mut self.sidebar
@@ -1346,6 +1478,7 @@ impl App {
         if !summary.model.is_empty() {
             self.model = summary.model;
         }
+        self.rag_collection = stored.rag_collection;
         self.replace_conversation(
             Conversation::from_messages(stored.messages, stored.context_start),
             Some(summary.id),
@@ -1364,6 +1497,8 @@ impl App {
     ) {
         self.conversation = conversation;
         self.measured = None;
+        // The collection carries over to a new conversation (`load` sets its own).
+        self.retrieved = None;
         self.conversation_id = id;
         self.conversation_title = title;
         // Message ids restart in every conversation: the cache must be dropped.
@@ -1372,6 +1507,30 @@ impl App {
         self.sidebar = None;
         self.status = Status::Ready;
     }
+}
+
+/// Keeps only the citations the reply refers to (`[2]`, `[1, 3]`), when it cites any.
+fn keep_cited(message: &mut crate::state::Message) {
+    let cited = cited_numbers(&message.content);
+    if message.citations.iter().any(|c| cited.contains(&c.number)) {
+        message.citations.retain(|c| cited.contains(&c.number));
+    }
+}
+
+/// Numbers written in square brackets in `text`: `[2]`, `[1, 3]`, `[4][5]`.
+fn cited_numbers(text: &str) -> Vec<usize> {
+    let mut numbers = Vec::new();
+    for part in text.split('[').skip(1) {
+        let Some((inside, _)) = part.split_once(']') else {
+            continue;
+        };
+        let parsed: Option<Vec<usize>> = inside
+            .split([',', ';'])
+            .map(|n| n.trim().parse().ok())
+            .collect();
+        numbers.extend(parsed.unwrap_or_default());
+    }
+    numbers
 }
 
 /// First line of the first message, shortened.
@@ -1904,6 +2063,7 @@ mod tests {
             },
             messages: stored.messages().to_vec(),
             context_start: 0,
+            rag_collection: None,
         })));
 
         assert!(
@@ -2554,6 +2714,144 @@ mod tests {
                 collection: "rust".into(),
                 root: "~/Mes cours/".into()
             }]
+        );
+    }
+
+    fn collection(name: &str) -> CollectionSummary {
+        CollectionSummary {
+            name: name.into(),
+            root: format!("/docs/{name}"),
+            embedding_model: "bge-m3".into(),
+            documents: 3,
+            chunks: 12,
+            updated_at: 0,
+        }
+    }
+
+    fn collections_listed(app: &mut App, names: &[&str]) -> Vec<Effect> {
+        app.update(Action::Storage(StoreEvent::Collections {
+            collections: names.iter().map(|n| collection(n)).collect(),
+            now: 0,
+        }))
+    }
+
+    #[test]
+    fn rag_is_checked_against_the_collections_then_sent_with_each_reply() {
+        let mut app = app();
+        assert_eq!(
+            app.run_command(CommandId::Rag, "cours"),
+            vec![Effect::Store(StoreRequest::ListCollections)]
+        );
+        assert_eq!(app.rag_collection, None, "not applied before the check");
+        collections_listed(&mut app, &["autre"]);
+        assert_eq!(
+            app.status,
+            Status::Error("collection « cours » introuvable (collections : autre)".into())
+        );
+        assert_eq!(app.rag_collection, None);
+
+        app.run_command(CommandId::Rag, "cours");
+        assert!(
+            collections_listed(&mut app, &["autre", "cours"]).is_empty(),
+            "no id yet"
+        );
+        assert_eq!(app.rag_collection.as_deref(), Some("cours"));
+        assert!(
+            matches!(&app.status, Status::Info(m) if m.starts_with("réponses à partir de « cours » (3 documents)"))
+        );
+
+        let job = send(&mut app, "Question");
+        assert_eq!(job.rag_collection.as_deref(), Some("cours"));
+        // Once stored, a change is saved right away.
+        llm(&mut app, job.request_id, LlmEvent::Done);
+        let effects = app.run_command(CommandId::Rag, "off");
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::Store(StoreRequest::SetRag {
+                collection: None,
+                ..
+            })]
+        ));
+        assert_eq!(send(&mut app, "Encore").rag_collection, None);
+    }
+
+    #[test]
+    fn retrieved_passages_become_the_citations_of_the_reply() {
+        let mut app = app();
+        app.rag_collection = Some("cours".into());
+        let job = send(&mut app, "Question");
+        let chunk = |source: &str, location: &str| ContextChunk {
+            source: source.into(),
+            location: location.into(),
+            text: "texte".into(),
+        };
+        llm(
+            &mut app,
+            job.request_id,
+            LlmEvent::Retrieved {
+                first_number: 2,
+                chunks: vec![
+                    chunk("a.md", "§ A"),
+                    chunk("b.pdf", "p. 3"),
+                    chunk("c.rs", ""),
+                ],
+            },
+        );
+        assert_eq!(last(&app).citations.len(), 3);
+        assert_eq!(app.retrieved.as_ref().map(|r| r.first_number), Some(2));
+        token(&mut app, job.request_id, "D'après [3] et [2, 9], oui.");
+        llm(&mut app, job.request_id, LlmEvent::Done);
+        let numbers: Vec<usize> = last(&app).citations.iter().map(|c| c.number).collect();
+        assert_eq!(numbers, vec![2, 3], "only the cited passages are kept");
+        assert_eq!(last(&app).citations[1].label(), "b.pdf p. 3");
+        // The next prompt shows the same passages, numbered after the attachments.
+        assert!(app.prompt()[0].content.contains("[1] a.md § A"));
+    }
+
+    #[test]
+    fn uncited_replies_keep_every_passage() {
+        assert_eq!(
+            cited_numbers("voir [1], [2,3] et [x] ou [ 4 ]"),
+            vec![1, 2, 3, 4]
+        );
+        let mut message = Conversation::new();
+        message.push(
+            Role::Assistant,
+            "Réponse sans renvoi.",
+            MessageStatus::Complete,
+        );
+        let mut message = message.messages()[0].clone();
+        message.citations = vec![Citation {
+            number: 1,
+            path: "a.md".into(),
+            location: String::new(),
+        }];
+        keep_cited(&mut message);
+        assert_eq!(message.citations.len(), 1);
+    }
+
+    #[test]
+    fn loading_a_conversation_restores_its_collection() {
+        let mut app = app();
+        app.rag_collection = Some("cours".into());
+        app.update(Action::Storage(StoreEvent::Loaded(StoredConversation {
+            summary: crate::storage::ConversationSummary {
+                id: ConversationId("old".into()),
+                title: "t".into(),
+                provider: "ollama".into(),
+                model: "llama3.2".into(),
+                updated_at: 0,
+            },
+            messages: Vec::new(),
+            context_start: 0,
+            rag_collection: Some("rust".into()),
+        })));
+        assert_eq!(app.rag_collection.as_deref(), Some("rust"));
+        app.update(Action::NewConversation);
+        assert_eq!(
+            app.rag_collection.as_deref(),
+            Some("rust"),
+            "kept for a new conversation"
         );
     }
 }

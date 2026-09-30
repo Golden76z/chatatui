@@ -77,6 +77,7 @@ fn run(location: Location, requests: &mpsc::Receiver<StoreRequest>, report: &dyn
                     StoreRequest::SaveMessage { .. }
                         | StoreRequest::SetModel { .. }
                         | StoreRequest::SetContextStart { .. }
+                        | StoreRequest::SetRag { .. }
                 ) {
                     report(StoreEvent::Error(message.clone()));
                 }
@@ -122,6 +123,7 @@ mod tests {
                 title: "t".into(),
                 provider: "p".into(),
                 model: "m".into(),
+                rag_collection: None,
             },
             message: Message {
                 id: MessageId(0),
@@ -129,6 +131,7 @@ mod tests {
                 content: "x".into(),
                 status: MessageStatus::Complete,
                 source: None,
+                citations: Vec::new(),
             },
         });
         handle.send(StoreRequest::Load(ConversationId("c".into())));

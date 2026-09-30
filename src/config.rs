@@ -34,6 +34,9 @@ mouse_capture = true
 # embedding_provider = "ollama"
 # embedding_model = "bge-m3"
 # chunk_tokens = 800
+# top_k = 5              # passages given to the model per reply (/rag)
+# context_tokens = 3000  # their token budget
+# min_score = 0.3        # similarity below which a passage is left out
 
 # Providers. "ollama", "openai" (ChatGPT) and "claude" are predefined: the sections below
 # only override their settings. Add your own OpenAI-compatible server the same way, e.g.
@@ -210,7 +213,7 @@ fn presets() -> Vec<(&'static str, ProviderConfig)> {
 }
 
 /// Application configuration. Missing keys fall back to their defaults.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub default_provider: String,

@@ -14,7 +14,7 @@ use std::{
 
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::state::{Message, MessageId, MessageStatus, Role};
+use crate::state::{Citation, Message, MessageId, MessageStatus, Role};
 
 mod schema;
 pub mod worker;
@@ -32,6 +32,8 @@ pub struct ConversationRecord {
     /// Provider id (see `config::Provider`).
     pub provider: String,
     pub model: String,
+    /// Document collection searched for each reply (`/rag`).
+    pub rag_collection: Option<String>,
 }
 
 /// A row of the conversation list.
@@ -53,6 +55,8 @@ pub struct StoredConversation {
     pub messages: Vec<Message>,
     /// Id of the first message still in the model's context.
     pub context_start: u64,
+    /// Document collection searched for each reply (`/rag`).
+    pub rag_collection: Option<String>,
 }
 
 /// Work for the storage worker.
@@ -71,6 +75,11 @@ pub enum StoreRequest {
     },
     /// Move the start of a conversation's context (after `/clear` or `/compact`).
     SetContextStart { id: ConversationId, start: u64 },
+    /// Change the document collection of a stored conversation (`/rag`).
+    SetRag {
+        id: ConversationId,
+        collection: Option<String>,
+    },
     /// List conversations, most recent first.
     List,
     /// Load one conversation.
@@ -164,6 +173,9 @@ impl Store {
             StoreRequest::SetContextStart { id, start } => {
                 self.set_context_start(&id, start).map(|()| None)
             }
+            StoreRequest::SetRag { id, collection } => {
+                self.set_rag(&id, collection.as_deref()).map(|()| None)
+            }
             StoreRequest::List => self.list().map(|conversations| {
                 Some(StoreEvent::Listed {
                     conversations,
@@ -202,24 +214,29 @@ impl Store {
         let (status, error) = encode_status(&message.status);
         let tx = self.conn.transaction()?;
         tx.execute(
-            "INSERT INTO conversations (id, title, provider, model, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+            "INSERT INTO conversations
+                 (id, title, provider, model, rag_collection, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
              ON CONFLICT (id) DO UPDATE SET provider = excluded.provider,
-                 model = excluded.model, updated_at = excluded.updated_at",
+                 model = excluded.model, rag_collection = excluded.rag_collection,
+                 updated_at = excluded.updated_at",
             params![
                 conversation.id.0,
                 conversation.title,
                 conversation.provider,
                 conversation.model,
+                conversation.rag_collection,
                 now
             ],
         )?;
         tx.execute(
             "INSERT INTO messages
-                 (conversation_id, seq, role, content, status, error, source, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 (conversation_id, seq, role, content, status, error, source, citations,
+                  created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
              ON CONFLICT (conversation_id, seq) DO UPDATE SET
-                 content = excluded.content, status = excluded.status, error = excluded.error",
+                 content = excluded.content, status = excluded.status, error = excluded.error,
+                 citations = excluded.citations",
             params![
                 conversation.id.0,
                 i64::try_from(message.id.0).unwrap_or(i64::MAX),
@@ -228,6 +245,7 @@ impl Store {
                 status,
                 error,
                 message.source,
+                encode_citations(&message.citations),
                 now
             ],
         )?;
@@ -240,6 +258,19 @@ impl Store {
         self.conn.execute(
             "UPDATE conversations SET context_start = ?2 WHERE id = ?1",
             params![id.0, i64::try_from(start).unwrap_or(i64::MAX)],
+        )?;
+        Ok(())
+    }
+
+    /// Changes the document collection of a conversation (no-op if it does not exist).
+    pub fn set_rag(
+        &mut self,
+        id: &ConversationId,
+        collection: Option<&str>,
+    ) -> Result<(), StoreError> {
+        self.conn.execute(
+            "UPDATE conversations SET rag_collection = ?2 WHERE id = ?1",
+            params![id.0, collection],
         )?;
         Ok(())
     }
@@ -279,10 +310,10 @@ impl Store {
 
     /// A conversation with its messages in order.
     pub fn load(&self, id: &ConversationId) -> Result<StoredConversation, StoreError> {
-        let (summary, context_start) = self
+        let (summary, context_start, rag_collection) = self
             .conn
             .query_row(
-                "SELECT id, title, provider, model, updated_at, context_start
+                "SELECT id, title, provider, model, updated_at, context_start, rag_collection
                  FROM conversations WHERE id = ?1",
                 [&id.0],
                 |row| {
@@ -295,6 +326,7 @@ impl Store {
                             updated_at: row.get(4)?,
                         },
                         row.get::<_, i64>(5)?,
+                        row.get::<_, Option<String>>(6)?,
                     ))
                 },
             )
@@ -302,7 +334,7 @@ impl Store {
             .ok_or(StoreError::NotFound)?;
 
         let mut statement = self.conn.prepare(
-            "SELECT seq, role, content, status, error, source FROM messages
+            "SELECT seq, role, content, status, error, source, citations FROM messages
              WHERE conversation_id = ?1 ORDER BY seq",
         )?;
         let rows = statement.query_map([&id.0], |row| {
@@ -313,23 +345,26 @@ impl Store {
                 row.get::<_, String>(3)?,
                 row.get::<_, Option<String>>(4)?,
                 row.get::<_, Option<String>>(5)?,
+                row.get::<_, Option<String>>(6)?,
             ))
         })?;
         let mut messages = Vec::new();
         for row in rows {
-            let (seq, role, content, status, error, source) = row?;
+            let (seq, role, content, status, error, source, citations) = row?;
             messages.push(Message {
                 id: MessageId(u64::try_from(seq).map_err(|_| corrupt("seq", &seq))?),
                 role: decode_role(&role)?,
                 content,
                 status: decode_status(&status, error)?,
                 source,
+                citations: decode_citations(citations.as_deref())?,
             });
         }
         Ok(StoredConversation {
             summary,
             messages,
             context_start: u64::try_from(context_start).unwrap_or(0),
+            rag_collection,
         })
     }
 }
@@ -343,6 +378,20 @@ fn now() -> i64 {
 
 fn corrupt(field: &str, value: &dyn std::fmt::Debug) -> StoreError {
     StoreError::Corrupt(format!("{field} = {value:?}"))
+}
+
+fn encode_citations(citations: &[Citation]) -> Option<String> {
+    if citations.is_empty() {
+        return None;
+    }
+    serde_json::to_string(citations).ok()
+}
+
+fn decode_citations(json: Option<&str>) -> Result<Vec<Citation>, StoreError> {
+    match json {
+        None | Some("") => Ok(Vec::new()),
+        Some(json) => serde_json::from_str(json).map_err(|_| corrupt("citations", &json)),
+    }
 }
 
 fn encode_role(role: Role) -> &'static str {
@@ -394,6 +443,7 @@ mod tests {
             title: title.into(),
             provider: "ollama".into(),
             model: "llama3.2".into(),
+            rag_collection: None,
         }
     }
 
@@ -404,6 +454,7 @@ mod tests {
             content: content.into(),
             status,
             source: None,
+            citations: Vec::new(),
         }
     }
 
@@ -599,5 +650,25 @@ mod tests {
         let loaded = store.load(&conv.id).expect("load");
         assert_eq!(loaded.messages, vec![attachment, summary]);
         assert_eq!(loaded.context_start, 1);
+    }
+
+    #[test]
+    fn citations_and_collection_round_trip() {
+        let mut store = store();
+        let mut conv = record("c1", "t");
+        conv.rag_collection = Some("cours".into());
+        let mut reply = message(1, Role::Assistant, "Voir [1].", MessageStatus::Complete);
+        reply.citations = vec![Citation {
+            number: 1,
+            path: "plan.docx".into(),
+            location: "§ Séance 1".into(),
+        }];
+        store.save_message(&conv, &reply).expect("save");
+        let loaded = store.load(&conv.id).expect("load");
+        assert_eq!(loaded.messages, vec![reply]);
+        assert_eq!(loaded.rag_collection.as_deref(), Some("cours"));
+
+        store.set_rag(&conv.id, None).expect("set");
+        assert_eq!(store.load(&conv.id).expect("load").rag_collection, None);
     }
 }

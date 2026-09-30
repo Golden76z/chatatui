@@ -17,8 +17,9 @@ Claude is reached through the native Anthropic Messages API.
   conversation remembers its provider and model
 - Context tools: attach files (`/add`), empty (`/clear`) or summarize (`/compact`) the
   context, with a gauge of how full it is
-- Document indexing for RAG (`/index`, `/collections`): Markdown, text, source code, PDF,
-  Word and LibreOffice files, embedded locally by default
+- Answers from your documents (RAG): index folders of Markdown, text, source code, PDF,
+  Word and LibreOffice files (`/index`), pick a collection per conversation (`/rag`), and
+  replies list the passages they cite
 - Configurable system prompt; network errors shown in the UI, never a crash
 
 ## Requirements
@@ -116,9 +117,19 @@ ollama pull bge-m3
 embedding_provider = "ollama"   # any configured OpenAI-compatible provider
 embedding_model = "bge-m3"      # changing it re-indexes a collection on its next /index
 chunk_tokens = 800              # passage size
+top_k = 5                       # passages given to the model per reply
+context_tokens = 3000           # their token budget
+min_score = 0.3                 # similarity (0–1) below which a passage is left out
 ```
 
-Using the replies' context (retrieval and citations) comes with the next milestone.
+`/rag <collection>` makes the conversation search that collection before each reply: the
+question (with the previous one when it is a short follow-up) is embedded and compared to
+every passage, and the best ones are added to the prompt as numbered sources. The reply
+lists them underneath (`Sources : [1] plan.docx § Séance 2`), keeping only those it cites
+when it cites any; they are saved with the conversation. `/prompt` shows the passages
+sent, `/context` what they cost, and the status bar shows the collection (`⌕ cours`),
+with ☁ when the provider is in the cloud, since the passages then leave the machine.
+`/rag off` stops; a new conversation keeps the current collection.
 
 ## Commands
 
@@ -137,6 +148,7 @@ run), or press `Ctrl+P` for the palette:
 | `/compact` | Ask the model to summarize the history; the summary replaces it in the context |
 | `/index <folder> [name]` | Index a folder into a document collection (named after the folder by default); `Tab` completes the path, `Esc` stops |
 | `/collections` | Indexed collections, and the result of the last `/index` |
+| `/rag [collection\|off]` | Answer from a collection of documents (per conversation), or stop |
 | `/help` | Commands and key bindings (`F1`) |
 | `/quit` | Quit (`Ctrl+C`) |
 
@@ -182,8 +194,10 @@ ui::render(&App, frame)                   read-only
   `prompt.rs` merges into the system message — the same path as files attached with
   `/add`. It runs inside the streaming task, so a slow retrieval never blocks the UI.
 - `rag/`: text extraction (`extract.rs`), passage splitting (`chunk.rs`), the `Embedder`
-  trait (`embed.rs`), the collection tables (`store.rs`) and the background indexing job
-  (`indexer.rs`, cancellable, reports progress as events).
+  trait (`embed.rs`), the collection tables (`store.rs`), the background indexing job
+  (`indexer.rs`, cancellable, reports progress as events) and `RagContext`
+  (`retrieve.rs`), the `ContextProvider` that searches the conversation's collection. The
+  streaming task reports the passages it used, which become the reply's citations.
 - `markdown/` + `transcript.rs`: markdown → wrapped lines, cached per message and width;
   while streaming only the last message is re-rendered, at most once per tick.
 - `storage/`: SQLite schema with migrations, and a worker thread that runs requests in

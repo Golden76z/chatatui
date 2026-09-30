@@ -240,6 +240,37 @@ pub fn list_collections(conn: &Connection) -> Result<Vec<CollectionSummary>, Sto
     Ok(rows.collect::<Result<_, _>>()?)
 }
 
+/// Changes whenever the passages of a collection do: (count, highest id).
+pub type ChunksVersion = (u64, i64);
+
+/// Embedding model of a collection and a value that changes whenever its passages do
+/// (`None`: no such collection).
+pub fn collection_state(
+    conn: &Connection,
+    name: &str,
+) -> Result<Option<(String, ChunksVersion)>, StoreError> {
+    Ok(conn
+        .query_row(
+            "SELECT c.embedding_model,
+                    (SELECT COUNT(*) FROM rag_chunks k JOIN rag_documents d
+                       ON k.document_id = d.id WHERE d.collection_id = c.id),
+                    (SELECT COALESCE(MAX(k.id), 0) FROM rag_chunks k JOIN rag_documents d
+                       ON k.document_id = d.id WHERE d.collection_id = c.id)
+             FROM rag_collections c WHERE c.name = ?1",
+            [name],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    (
+                        u64::try_from(r.get::<_, i64>(1)?).unwrap_or(0),
+                        r.get::<_, i64>(2)?,
+                    ),
+                ))
+            },
+        )
+        .optional()?)
+}
+
 /// Every passage of a collection, with its vector (for search).
 pub fn load_chunks(conn: &Connection, collection: &str) -> Result<Vec<StoredChunk>, StoreError> {
     let mut statement = conn.prepare(

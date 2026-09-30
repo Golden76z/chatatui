@@ -29,6 +29,28 @@ pub enum MessageStatus {
     Failed(String),
 }
 
+/// A passage the model was given to write a reply, as listed under it.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Citation {
+    /// Number of the source in the prompt (`[3]`), which the model uses to cite it.
+    pub number: usize,
+    /// File path, relative to the collection root.
+    pub path: String,
+    /// Where in the file (`p. 3`, `§ Séance 1`, `L12-40`); may be empty.
+    pub location: String,
+}
+
+impl Citation {
+    /// `plan.docx § Séance 1`.
+    pub fn label(&self) -> String {
+        if self.location.is_empty() {
+            self.path.clone()
+        } else {
+            format!("{} {}", self.path, self.location)
+        }
+    }
+}
+
 /// A single chat message.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Message {
@@ -38,6 +60,8 @@ pub struct Message {
     pub status: MessageStatus,
     /// Origin of an attachment (the path as typed).
     pub source: Option<String>,
+    /// Passages retrieved for an assistant reply (RAG).
+    pub citations: Vec<Citation>,
 }
 
 /// An ordered list of messages, and where the model's context starts.
@@ -106,6 +130,7 @@ impl Conversation {
             content,
             status,
             source,
+            citations: Vec::new(),
         });
         id
     }

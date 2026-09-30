@@ -35,10 +35,10 @@ pub fn build_messages(
         .find(usable);
     let mut chunks: Vec<ContextChunk> = history
         .iter()
-        .filter(|m| m.role == Role::Attachment)
-        .filter(usable)
+        .filter(|m| is_sent_attachment(m))
         .map(|m| ContextChunk {
             source: m.source.clone().unwrap_or_else(|| "fichier joint".into()),
+            location: String::new(),
             text: m.content.clone(),
         })
         .collect();
@@ -59,6 +59,21 @@ pub fn build_messages(
         Some(ChatMessage::new(role, m.content.clone()))
     }));
     messages
+}
+
+/// An attachment whose text goes into the prompt as a numbered source.
+fn is_sent_attachment(message: &Message) -> bool {
+    message.role == Role::Attachment
+        && !matches!(
+            message.status,
+            MessageStatus::Failed(_) | MessageStatus::Streaming
+        )
+        && !message.content.trim().is_empty()
+}
+
+/// Number given in the prompt to the first retrieved chunk: attached files come first.
+pub fn first_context_number(history: &[Message]) -> usize {
+    history.iter().filter(|m| is_sent_attachment(m)).count() + 1
 }
 
 /// Request asking the model to summarize `history` (for `/compact`).
@@ -118,7 +133,7 @@ fn system_message(system_prompt: &str, summary: Option<&str>, chunks: &[ContextC
             block.push_str(&format!(
                 "\n[{}] {}\n{}\n",
                 i + 1,
-                chunk.source,
+                chunk.label(),
                 chunk.text.trim()
             ));
         }
@@ -175,6 +190,7 @@ mod tests {
         let context = Context {
             chunks: vec![ContextChunk {
                 source: "notes.md".into(),
+                location: String::new(),
                 text: "The sky is green.".into(),
             }],
         };
@@ -200,14 +216,16 @@ mod tests {
         let context = Context {
             chunks: vec![ContextChunk {
                 source: "rag.md".into(),
+                location: "§ Intro".into(),
                 text: "extrait".into(),
             }],
         };
+        assert_eq!(first_context_number(c.messages()), 2);
         let messages = build_messages("", &context, c.messages());
         assert_eq!(messages.len(), 2, "one system message + the question");
         let system = &messages[0].content;
         assert!(system.contains("[1] ./plan.md\nPlan du cours"));
-        assert!(system.contains("[2] rag.md\nextrait"));
+        assert!(system.contains("[2] rag.md § Intro\nextrait"));
         assert_eq!(messages[1].content, "Résume le plan");
     }
 

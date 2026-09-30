@@ -37,7 +37,7 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
         ),
         Span::raw(app.model_display()),
     ]);
-    let left = with_indexing(app, with_gauge(app, left));
+    let left = with_indexing(app, with_rag(app, with_gauge(app, left)));
 
     // State and model take priority over hints: the first hint set that fits is shown.
     let style = Style::default().bg(Color::Black);
@@ -87,6 +87,27 @@ fn with_gauge(app: &App, mut line: Line<'static>) -> Line<'static> {
             }
         }
         None => line.push_span(Span::styled(format!("ctx {approx}{used}"), dim)),
+    }
+    line
+}
+
+/// Appends the collection searched for replies (`/rag`); flagged when it goes to the cloud.
+fn with_rag(app: &App, mut line: Line<'static>) -> Line<'static> {
+    let Some(collection) = &app.rag_collection else {
+        return line;
+    };
+    line.push_span(Span::styled(" │ ", Style::default().fg(Color::DarkGray)));
+    if app.is_local() {
+        line.push_span(Span::styled(
+            format!("⌕ {collection}"),
+            Style::default().fg(Color::Blue),
+        ));
+    } else {
+        // The passages leave the machine with the prompt.
+        line.push_span(Span::styled(
+            format!("⌕ {collection} ☁"),
+            Style::default().fg(Color::Yellow),
+        ));
     }
     line
 }

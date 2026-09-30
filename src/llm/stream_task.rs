@@ -12,7 +12,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::{ChatRequest, Clients, LlmClient, LlmEvent, RequestId, StreamItem};
 use crate::{
-    context::ContextProvider,
+    context::{ContextProvider, ContextQuery},
     event::{AppEvent, Event},
     prompt,
     state::Message,
@@ -39,6 +39,8 @@ pub struct CompletionJob {
     pub system_prompt: String,
     /// Messages in the context, up to and including the new user message.
     pub history: Vec<Message>,
+    /// Document collection searched for this reply (`/rag`), if any.
+    pub rag_collection: Option<String>,
 }
 
 /// Backends used by the streaming task.
@@ -92,10 +94,20 @@ pub async fn run(
 async fn generate(backends: &Backends, job: CompletionJob, send: &impl Fn(LlmEvent)) {
     let messages = match job.kind {
         JobKind::Reply => {
-            let context = match backends.context.provide(&job.history).await {
+            let query = ContextQuery {
+                collection: job.rag_collection.as_deref(),
+                history: &job.history,
+            };
+            let context = match backends.context.provide(query).await {
                 Ok(context) => context,
                 Err(error) => return send(LlmEvent::Error(error.to_string())),
             };
+            if !context.is_empty() {
+                send(LlmEvent::Retrieved {
+                    first_number: prompt::first_context_number(&job.history),
+                    chunks: context.chunks.clone(),
+                });
+            }
             prompt::build_messages(&job.system_prompt, &context, &job.history)
         }
         JobKind::Summary => prompt::build_summary_request(&job.history),
@@ -151,6 +163,7 @@ mod tests {
             model: "test-model".into(),
             system_prompt: "Be brief.".into(),
             history: conversation.messages().to_vec(),
+            rag_collection: None,
         }
     }
 
@@ -279,7 +292,7 @@ mod tests {
 
     #[async_trait]
     impl ContextProvider for FixedContext {
-        async fn provide(&self, _conversation: &[Message]) -> Result<Context, ContextError> {
+        async fn provide(&self, _query: ContextQuery<'_>) -> Result<Context, ContextError> {
             self.0.clone()
         }
     }
@@ -290,11 +303,24 @@ mod tests {
         let context = Context {
             chunks: vec![ContextChunk {
                 source: "doc.md".into(),
+                location: "p. 2".into(),
                 text: "secret fact".into(),
             }],
         };
-        let backends = Backends::single("ollama", llm.clone(), Arc::new(FixedContext(Ok(context))));
-        run_to_end(backends).await;
+        let backends = Backends::single(
+            "ollama",
+            llm.clone(),
+            Arc::new(FixedContext(Ok(context.clone()))),
+        );
+        let events = run_to_end(backends).await;
+        assert_eq!(
+            events[0],
+            LlmEvent::Retrieved {
+                first_number: 1,
+                chunks: context.chunks
+            },
+            "retrieved passages are reported first"
+        );
         let system = &llm.requests()[0].messages[0];
         assert_eq!(system.role, ChatRole::System);
         assert!(system.content.contains("secret fact"));

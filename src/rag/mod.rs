@@ -4,18 +4,20 @@
 //! - [`chunk`]: passages of about `chunk_tokens` tokens, each with its location;
 //! - [`embed`]: vectors from an OpenAI-compatible `/v1/embeddings` endpoint;
 //! - [`store`]: collections, documents and passages in the SQLite database;
-//! - [`indexer`]: the background job behind `/index`.
+//! - [`indexer`]: the background job behind `/index`;
+//! - [`retrieve`]: the context provider that searches a collection for each reply.
 
 pub mod chunk;
 pub mod embed;
 pub mod extract;
 pub mod indexer;
+pub mod retrieve;
 pub mod store;
 
 use serde::Deserialize;
 
 /// `[rag]` section of the configuration.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct RagConfig {
     /// Provider computing the embeddings (must speak the OpenAI API: Ollama, LM Studio,
@@ -24,6 +26,12 @@ pub struct RagConfig {
     pub embedding_model: String,
     /// Target size of a passage, in tokens.
     pub chunk_tokens: usize,
+    /// Most passages given to the model per reply.
+    pub top_k: usize,
+    /// Token budget of the passages given per reply.
+    pub context_tokens: u64,
+    /// Passages less similar to the question than this (cosine, 0–1) are left out.
+    pub min_score: f32,
 }
 
 impl Default for RagConfig {
@@ -32,6 +40,9 @@ impl Default for RagConfig {
             embedding_provider: "ollama".into(),
             embedding_model: "bge-m3".into(),
             chunk_tokens: 800,
+            top_k: 5,
+            context_tokens: 3_000,
+            min_score: 0.3,
         }
     }
 }

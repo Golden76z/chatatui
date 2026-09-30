@@ -14,6 +14,7 @@ pub enum CommandId {
     Compact,
     Index,
     Collections,
+    Rag,
     Help,
     Quit,
 }
@@ -155,6 +156,15 @@ pub const COMMANDS: &[CommandSpec] = &[
         aliases: &["docs"],
         arg: Arg::None,
         description: "Collections de documents indexées",
+        shortcut: None,
+        legacy_shortcut: None,
+    },
+    CommandSpec {
+        id: CommandId::Rag,
+        name: "rag",
+        aliases: &["documents"],
+        arg: Arg::Optional("<collection>|off"),
+        description: "Répondre à partir d'une collection de documents",
         shortcut: None,
         legacy_shortcut: None,
     },

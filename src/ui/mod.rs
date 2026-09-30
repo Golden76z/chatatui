@@ -430,4 +430,41 @@ mod tests {
         insta::assert_snapshot!(draw(&mut app, 100, 8).backend());
         assert_eq!(app.update(Action::Cancel), vec![Effect::CancelIndex]);
     }
+
+    #[test]
+    fn reply_with_sources_and_rag_segment() {
+        let mut app = App::new(&Config::default(), false);
+        app.rag_collection = Some("rust".into());
+        let id = stream(&mut app, "Que dit le cours sur l'ownership ?", &[]);
+        let chunk = |source: &str, location: &str| crate::context::ContextChunk {
+            source: source.into(),
+            location: location.into(),
+            text: "…".into(),
+        };
+        app.update(Action::Llm {
+            request_id: id,
+            event: LlmEvent::Retrieved {
+                first_number: 1,
+                chunks: vec![
+                    chunk("cours/ch04-ownership.pdf", "p. 12"),
+                    chunk("plan.docx", "§ Séance 1 : ownership"),
+                    chunk("notes.md", "§ Divers"),
+                ],
+            },
+        });
+        for token in [
+            "Chaque valeur a **un seul** propriétaire [1],",
+            " vu en séance 1 [2].",
+        ] {
+            app.update(Action::Llm {
+                request_id: id,
+                event: LlmEvent::Token(token.into()),
+            });
+        }
+        app.update(Action::Llm {
+            request_id: id,
+            event: LlmEvent::Done,
+        });
+        insta::assert_snapshot!(draw(&mut app, 70, 14).backend());
+    }
 }

@@ -17,6 +17,7 @@ use chatatui::{
     rag::{
         embed::HashEmbedder,
         indexer::{self, IndexRequest},
+        retrieve::{RagContext, Selection},
     },
     state::{MessageStatus, Overlay, Role, Status},
     storage::Store,
@@ -67,9 +68,23 @@ impl Harness {
 
     /// A harness whose store lives in `path`, so that `/index` can run (hash embeddings).
     fn with_database(path: &std::path::Path) -> Self {
-        let mut h = Self::new(Arc::new(MockLlmClient::new([])));
+        Self::with_database_and_llm(path, Arc::new(MockLlmClient::new([])))
+    }
+
+    /// Same, with replies searching the conversation's collection (hash embeddings).
+    fn with_database_and_llm(path: &std::path::Path, llm: Arc<MockLlmClient>) -> Self {
+        let mut h = Self::new(llm);
         h.store = Store::open(path).expect("file store");
         h.database = Some(path.to_owned());
+        h.backends.context = Arc::new(RagContext::new(
+            Ok(Arc::new(HashEmbedder::default())),
+            Ok(path.to_owned()),
+            Selection {
+                top_k: 1,
+                context_tokens: 10_000,
+                min_score: 0.0,
+            },
+        ));
         h
     }
 
@@ -825,4 +840,68 @@ async fn tab_completes_the_folder_after_index() {
         )));
     }
     assert!(!h.app.key_context().completing_path);
+}
+
+#[tokio::test]
+async fn rag_answers_from_the_collection_and_keeps_the_sources() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let docs = dir.path().join("cours");
+    std::fs::create_dir(&docs).expect("mkdir");
+    std::fs::write(
+        docs.join("ownership.md"),
+        "# Ownership\n\nChaque valeur a un propriétaire unique.",
+    )
+    .expect("write");
+    std::fs::write(
+        docs.join("traits.md"),
+        "# Traits\n\nUn trait décrit un comportement commun aux types.",
+    )
+    .expect("write");
+    let llm = Arc::new(MockLlmClient::new([
+        MockReply::tokens(&["Un trait décrit un comportement commun [1]."]),
+        MockReply::tokens(&["Sans documents."]),
+    ]));
+    let mut h = Harness::with_database_and_llm(&dir.path().join("db.sqlite"), llm.clone());
+    h.command(&format!("/index {}", docs.display()));
+    h.run_until_indexed().await;
+
+    h.command("/rag inconnue");
+    assert!(
+        matches!(&h.app.status, Status::Error(m) if m.contains("introuvable (collections : cours)"))
+    );
+    h.command("/rag cours");
+    assert_eq!(h.app.rag_collection.as_deref(), Some("cours"));
+
+    h.send("Qu'est-ce qu'un trait, ce comportement commun aux types ?");
+    h.run_until_idle().await;
+    let request = llm.requests().pop().expect("request");
+    let system = &request.messages[0].content;
+    assert!(system.contains("[1] traits.md § Traits\n# Traits\n\nUn trait décrit"));
+    assert!(
+        !request.messages[0].content.contains("propriétaire unique"),
+        "top_k = 1"
+    );
+    let reply = h.app.conversation.messages().last().expect("reply").clone();
+    assert_eq!(reply.citations.len(), 1);
+    assert_eq!(reply.citations[0].label(), "traits.md § Traits");
+
+    // Reloaded from the database: the sources and the collection are back.
+    h.reload();
+    assert_eq!(h.app.conversation.messages().last(), Some(&reply));
+    assert_eq!(h.app.rag_collection.as_deref(), Some("cours"));
+
+    h.command("/rag off");
+    h.send("Et sinon ?");
+    h.run_until_idle().await;
+    let request = llm.requests().pop().expect("request");
+    assert!(!request.messages[0].content.contains("traits.md"));
+    assert!(
+        h.app
+            .conversation
+            .messages()
+            .last()
+            .expect("reply")
+            .citations
+            .is_empty()
+    );
 }

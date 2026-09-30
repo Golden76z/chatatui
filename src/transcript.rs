@@ -181,8 +181,31 @@ pub fn message_lines(message: &Message, width: usize) -> Vec<Line<'static>> {
         }
     }
     lines.extend(body);
+    if !message.citations.is_empty() {
+        lines.extend(citation_lines(message, width));
+    }
     lines.push(Line::default());
     lines
+}
+
+/// `Sources : [1] cours.pdf p. 3 · [2] plan.docx § Séance 1`, wrapped.
+fn citation_lines(message: &Message, width: usize) -> Vec<Line<'static>> {
+    let dim = Style::default().fg(Color::DarkGray);
+    let mut spans = vec![Span::styled("Sources : ", dim)];
+    for (i, citation) in message.citations.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(" · ", dim));
+        }
+        spans.push(Span::styled(
+            format!("[{}] ", citation.number),
+            Style::default().fg(Color::Blue),
+        ));
+        spans.push(Span::styled(citation.label(), dim));
+    }
+    wrap_spans(&spans, width)
+        .into_iter()
+        .map(Line::from)
+        .collect()
 }
 
 fn header(role: Role) -> Line<'static> {

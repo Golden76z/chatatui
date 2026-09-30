@@ -35,10 +35,17 @@ pub fn lines(app: &App, width: usize) -> Vec<Line<'static>> {
         }
         Some((collections, now)) => {
             for collection in collections {
-                lines.push(Line::from(vec![
+                let mut head = vec![
                     Span::styled(format!(" {}", collection.name), bold),
                     Span::styled(format!("  {}", ago(now - collection.updated_at)), dim),
-                ]));
+                ];
+                if app.rag_collection.as_deref() == Some(collection.name.as_str()) {
+                    head.push(Span::styled(
+                        "  ⌕ cette conversation",
+                        Style::default().fg(Color::Blue),
+                    ));
+                }
+                lines.push(Line::from(head));
                 wrapped(
                     &mut lines,
                     vec![Span::styled(collection.root.clone(), dim)],
@@ -121,7 +128,7 @@ pub fn lines(app: &App, width: usize) -> Vec<Line<'static>> {
     wrapped(
         &mut lines,
         vec![Span::styled(
-            "/index <dossier> [nom] pour indexer ou mettre à jour (Échap arrête)",
+            "/index <dossier> [nom] indexe ou met à jour · /rag <nom> l'utilise pour répondre",
             dim,
         )],
         1,
