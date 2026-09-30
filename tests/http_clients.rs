@@ -81,6 +81,7 @@ fn provider(kind: ProviderKind, base_url: &str, api_key: Option<&str>) -> Provid
         max_output_tokens: 1024,
         context_window: None,
         local: true,
+        prices: None,
     }
 }
 

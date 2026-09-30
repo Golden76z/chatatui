@@ -128,6 +128,7 @@ tests/      app_flow.rs http_clients.rs fixtures/*.sse
 | J20 ✅ | Tool calling: `read_file`, `list_dir`, `search_documents`; OpenAI and Anthropic formats; each call confirmed (Enter / t always / Esc), secrets refused; `/tools on\|off` |
 | J21 ✅ | Images as input: `/add photo.png` (≤ 5 MB), sent with the next question as OpenAI `image_url` / Claude `image` blocks, stored apart from the text (schema v9) |
 | J22 ✅ | GitHub: CI (fmt, clippy, tests on Linux; macOS build), release binaries on `v*` tags (Linux x86_64/arm64, macOS arm64), install docs |
+| J23 ✅ | Input history (Ctrl+↑/↓, all conversations), generation speed (t/s live, last reply in `/context`), cost of cloud conversations (`price_input` / `price_output`) |
 
 Continuous integration (`.github/workflows/ci.yml`) runs the same checks on every push;
 pushing a `v*` tag builds release binaries (`release.yml`).

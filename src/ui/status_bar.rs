@@ -18,7 +18,14 @@ use crate::{
 /// Draws the status bar.
 pub fn render(app: &App, frame: &mut Frame, area: Rect) {
     let (label, color) = if app.is_generating() {
-        ("◐ Génération…".to_owned(), crate::theme::palette().warn)
+        let speed = app
+            .live_speed()
+            .map(|s| format!(" {s} t/s"))
+            .unwrap_or_default();
+        (
+            format!("◐ Génération…{speed}"),
+            crate::theme::palette().warn,
+        )
     } else {
         match &app.status {
             Status::Ready | Status::Generating => ("● Prêt".to_owned(), crate::theme::palette().ok),
@@ -37,7 +44,13 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
         ),
         Span::raw(app.model_display()),
     ]);
-    let left = with_indexing(app, with_rag(app, with_gauge(app, with_persona(app, left))));
+    let left = with_indexing(
+        app,
+        with_rag(
+            app,
+            with_cost(app, with_gauge(app, with_persona(app, left))),
+        ),
+    );
 
     // State and model take priority over hints: the first hint set that fits is shown.
     let style = Style::default().bg(crate::theme::palette().bar_bg);
@@ -87,6 +100,17 @@ fn with_gauge(app: &App, mut line: Line<'static>) -> Line<'static> {
             }
         }
         None => line.push_span(Span::styled(format!("ctx {approx}{used}"), dim)),
+    }
+    line
+}
+
+/// Appends what the conversation cost, for priced providers.
+fn with_cost(app: &App, mut line: Line<'static>) -> Line<'static> {
+    if let Some((micros, currency)) = &app.conversation_cost {
+        line.push_span(Span::styled(
+            format!(" · {}", crate::app::format_cost(*micros, currency)),
+            Style::default().fg(crate::theme::palette().dim),
+        ));
     }
     line
 }

@@ -88,7 +88,9 @@ model = "llama3.2"
 # max_output_tokens = 8192
 #
 # Any provider: `context_window = 32768` sets the context size shown by the gauge, when
-# the server cannot report it (OpenAI) or reports it wrongly.
+# the server cannot report it (OpenAI) or reports it wrongly. `price_input = 3.0` and
+# `price_output = 15.0` (per million tokens, `currency = "$"`) show what conversations
+# cost in /context and the status bar.
 "#;
 
 /// Wire protocol of a provider.
@@ -120,6 +122,37 @@ pub struct ProviderConfig {
     pub max_output_tokens: Option<u32>,
     /// Context window in tokens, when the server cannot tell (overrides detection).
     pub context_window: Option<u64>,
+    /// Price of a million prompt tokens (e.g. `3.0`), to estimate what a conversation costs.
+    pub price_input: Option<Price>,
+    /// Price of a million reply tokens.
+    pub price_output: Option<Price>,
+    /// Currency of the prices (default `$`).
+    pub currency: Option<String>,
+}
+
+/// A price per million tokens, stored in millionths of the currency unit (the file
+/// holds a decimal number such as `3.0` or `0.15`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Price(pub u64);
+
+impl<'de> Deserialize<'de> for Price {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = f64::deserialize(deserializer)?;
+        if !(0.0..=1_000_000.0).contains(&value) {
+            return Err(serde::de::Error::custom(
+                "a price must be between 0 and 1000000",
+            ));
+        }
+        // Rounded to a millionth: exact enough for any real price.
+        Ok(Self((value * 1_000_000.0).round() as u64))
+    }
+}
+
+impl Price {
+    /// Cost of `tokens` tokens, in millionths of the currency unit.
+    pub fn cost(self, tokens: u64) -> u64 {
+        u64::try_from(u128::from(tokens) * u128::from(self.0) / 1_000_000).unwrap_or(u64::MAX)
+    }
 }
 
 impl std::fmt::Debug for ProviderConfig {
@@ -156,7 +189,10 @@ impl ProviderConfig {
             api_key,
             api_key_env,
             max_output_tokens,
-            context_window
+            context_window,
+            price_input,
+            price_output,
+            currency
         );
         self
     }
@@ -180,6 +216,16 @@ pub struct Provider {
     pub context_window: Option<u64>,
     /// Runs on this machine (loopback address): nothing leaves the computer.
     pub local: bool,
+    /// Prices per million tokens (prompt, reply) and their currency, when configured.
+    pub prices: Option<Prices>,
+}
+
+/// What a provider charges, per million tokens.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Prices {
+    pub input: Price,
+    pub output: Price,
+    pub currency: String,
 }
 
 impl Provider {
@@ -378,6 +424,13 @@ impl Config {
                         .max_output_tokens
                         .unwrap_or(DEFAULT_MAX_OUTPUT_TOKENS),
                     context_window: section.context_window.filter(|n| *n > 0),
+                    prices: (section.price_input.is_some() || section.price_output.is_some()).then(
+                        || Prices {
+                            input: section.price_input.unwrap_or_default(),
+                            output: section.price_output.unwrap_or_default(),
+                            currency: section.currency.clone().unwrap_or_else(|| "$".into()),
+                        },
+                    ),
                 }
             })
             .collect()
@@ -567,5 +620,21 @@ mod tests {
         }
         assert!(!is_loopback("https://api.openai.com/v1"));
         assert!(!is_loopback("not a url"));
+    }
+
+    #[test]
+    fn prices_are_read_as_decimals() {
+        let config = Config::from_toml(
+            "[providers.claude]\nprice_input = 3.0\nprice_output = 15\ncurrency = \"€\"\n",
+        )
+        .expect("parses");
+        let providers = config.resolve_providers(no_env);
+        let prices = by_id(&providers, "claude").prices.clone().expect("prices");
+        assert_eq!(prices.input, Price(3_000_000));
+        assert_eq!(prices.currency, "€");
+        // 200k prompt tokens at 3 € the million = 0,60 €.
+        assert_eq!(prices.input.cost(200_000), 600_000);
+        assert_eq!(by_id(&providers, "ollama").prices, None);
+        assert!(Config::from_toml("[providers.claude]\nprice_input = -1\n").is_err());
     }
 }

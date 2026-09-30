@@ -11,17 +11,10 @@
   confirmed.
 - **J21**: images as input (`/add photo.png`).
 - **J22**: GitHub CI and release binaries.
+- **J23**: input history (`Ctrl+↑` / `Ctrl+↓`), generation speed, cost of cloud
+  conversations.
 
 ## Next
-
-### J23 — Typing and follow-up
-
-- **Input history**: `Ctrl+↑` / `Ctrl+↓` recall the previous messages sent (all
-  conversations), like a shell.
-- **Generation speed**: tokens per second and elapsed time in the status bar while a
-  reply streams, and after it in `/context`.
-- **Cost of cloud conversations**: `price_input` / `price_output` (per million tokens)
-  in a provider section; `/context` shows what the conversation has cost so far.
 
 ### J24 — Web pages
 

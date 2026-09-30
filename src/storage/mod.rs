@@ -93,6 +93,8 @@ pub enum StoreRequest {
     },
     /// List conversations, most recent first.
     List,
+    /// The user's latest messages, for input history (`Ctrl+↑`).
+    InputHistory,
     /// Conversations whose title or messages contain every word of the query.
     Search(String),
     /// Delete a conversation's messages from `from` (a message id) on.
@@ -127,6 +129,8 @@ pub enum StoreEvent {
     },
     /// A conversation was deleted.
     ConversationDeleted(ConversationId),
+    /// The user's latest messages, oldest first.
+    InputHistory(Vec<String>),
     /// Result of [`StoreRequest::DeleteCollection`]: `found` is `false` if there was none.
     CollectionDeleted {
         name: String,
@@ -227,6 +231,9 @@ impl Store {
                 })
             }),
             StoreRequest::Load(id) => self.load(&id).map(|c| Some(StoreEvent::Loaded(c))),
+            StoreRequest::InputHistory => self
+                .input_history(INPUT_HISTORY)
+                .map(|h| Some(StoreEvent::InputHistory(h))),
             StoreRequest::Search(query) => self.search(&query).map(|results| {
                 Some(StoreEvent::Searched {
                     query,
@@ -411,6 +418,21 @@ impl Store {
         Ok(())
     }
 
+    /// The `limit` latest messages the user sent, oldest first, without repeats in a row.
+    pub fn input_history(&self, limit: usize) -> Result<Vec<String>, StoreError> {
+        let mut statement = self.conn.prepare(
+            "SELECT content FROM messages WHERE role = 'user' AND content != ''
+             ORDER BY created_at DESC, rowid DESC LIMIT ?1",
+        )?;
+        let rows = statement.query_map([i64::try_from(limit).unwrap_or(i64::MAX)], |r| {
+            r.get::<_, String>(0)
+        })?;
+        let mut history: Vec<String> = rows.collect::<Result<_, _>>()?;
+        history.reverse();
+        history.dedup();
+        Ok(history)
+    }
+
     /// Deletes a conversation and its messages.
     pub fn delete(&mut self, id: &ConversationId) -> Result<(), StoreError> {
         self.conn
@@ -547,6 +569,9 @@ fn enable_wal(conn: &Connection) -> Result<(), StoreError> {
         }
     }
 }
+
+/// Messages kept for input history.
+const INPUT_HISTORY: usize = 500;
 
 /// Current Unix time in seconds.
 fn now() -> i64 {
@@ -954,6 +979,33 @@ mod tests {
         assert!(
             store.search("iVBORw").expect("search").is_empty(),
             "not indexed"
+        );
+    }
+
+    #[test]
+    fn input_history_lists_the_latest_questions() {
+        let mut store = store();
+        let save = |store: &mut Store, conv: &str, seq: u64, role: Role, text: &str, at: i64| {
+            store
+                .save_message_at(
+                    &record(conv, "t"),
+                    &message(seq, role, text, MessageStatus::Complete),
+                    at,
+                )
+                .expect("save");
+        };
+        save(&mut store, "a", 0, Role::User, "un", 1);
+        save(&mut store, "a", 1, Role::Assistant, "réponse", 2);
+        save(&mut store, "b", 0, Role::User, "deux", 3);
+        save(&mut store, "b", 1, Role::User, "deux", 4);
+        save(&mut store, "b", 2, Role::User, "trois", 5);
+        assert_eq!(
+            store.input_history(10).expect("history"),
+            vec!["un", "deux", "trois"]
+        );
+        assert_eq!(
+            store.input_history(2).expect("history"),
+            vec!["deux", "trois"]
         );
     }
 }

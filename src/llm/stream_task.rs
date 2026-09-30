@@ -156,6 +156,11 @@ async fn generate(
     } else {
         Vec::new()
     };
+    let started = std::time::Instant::now();
+    let millis =
+        |since: std::time::Instant| u64::try_from(since.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let mut first_token_ms: Option<u64> = None;
+    let mut last_timing = started;
     for round in 0..MAX_TOOL_ROUNDS {
         let request = ChatRequest {
             model: job.model.clone(),
@@ -173,6 +178,14 @@ async fn generate(
                 Ok(StreamItem::Text(token)) => {
                     text.push_str(&token);
                     send(LlmEvent::Token(token));
+                    first_token_ms.get_or_insert_with(|| millis(started));
+                    if last_timing.elapsed() >= std::time::Duration::from_millis(500) {
+                        last_timing = std::time::Instant::now();
+                        send(LlmEvent::Timing {
+                            first_token_ms,
+                            elapsed_ms: millis(started),
+                        });
+                    }
                 }
                 Ok(StreamItem::Usage(usage)) => send(LlmEvent::Usage(usage)),
                 Ok(StreamItem::ToolCallDelta {
@@ -191,6 +204,10 @@ async fn generate(
         }
         drop(stream);
         let Some(decisions) = decisions.as_deref_mut().filter(|_| !calls.is_empty()) else {
+            send(LlmEvent::Timing {
+                first_token_ms,
+                elapsed_ms: millis(started),
+            });
             return send(LlmEvent::Done);
         };
         let calls: Vec<ToolCall> = calls
@@ -287,7 +304,9 @@ mod tests {
         let mut events = Vec::new();
         while let Ok(Event::App(AppEvent::Llm { request_id, event })) = rx.try_recv() {
             assert_eq!(request_id, RequestId(7));
-            events.push(event);
+            if !matches!(event, LlmEvent::Timing { .. }) {
+                events.push(event);
+            }
         }
         events
     }
@@ -469,7 +488,9 @@ mod tests {
         run(backends, job, CancellationToken::new(), tx).await;
         let mut events = Vec::new();
         while let Ok(Event::App(AppEvent::Llm { event, .. })) = rx.try_recv() {
-            events.push(event);
+            if !matches!(event, LlmEvent::Timing { .. }) {
+                events.push(event);
+            }
         }
         assert_eq!(events, vec![token("- résumé"), LlmEvent::Done]);
         let request = &llm.requests()[0];

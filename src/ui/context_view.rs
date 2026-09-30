@@ -92,6 +92,28 @@ pub fn lines(app: &App, width: usize) -> Vec<Line<'static>> {
         ]));
     }
 
+    if let Some(speed) = app.last_speed {
+        lines.push(Line::from(vec![
+            label("Dernière réponse"),
+            Span::raw(format!(
+                "{} tokens en {} s ({} t/s), premier token après {} s",
+                format_count(speed.tokens),
+                seconds(speed.generation_ms),
+                speed.per_second(),
+                seconds(speed.first_token_ms)
+            )),
+        ]));
+    }
+    if let Some((micros, currency)) = &app.conversation_cost {
+        lines.push(Line::from(vec![
+            label("Coût"),
+            Span::raw(format!(
+                "≈ {} depuis l'ouverture de la conversation",
+                crate::app::format_cost(*micros, currency)
+            )),
+        ]));
+    }
+
     // Breakdown of the prompt, estimated per part.
     let prompt = app.prompt();
     let (system, history): (Vec<_>, Vec<_>) =
@@ -287,6 +309,11 @@ pub fn lines(app: &App, width: usize) -> Vec<Line<'static>> {
         dim,
     ));
     lines
+}
+
+/// `6,2` (seconds, one decimal).
+fn seconds(ms: u64) -> String {
+    format!("{:.1}", ms as f64 / 1000.0).replace('.', ",")
 }
 
 /// Gauge colour for a fill percentage.

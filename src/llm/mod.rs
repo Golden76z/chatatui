@@ -285,6 +285,12 @@ pub enum LlmEvent {
         ok: bool,
         output: String,
     },
+    /// How long the request has taken so far (sent every half second while tokens
+    /// arrive, and once at the end): milliseconds until the first token, and in all.
+    Timing {
+        first_token_ms: Option<u64>,
+        elapsed_ms: u64,
+    },
     /// The reply is complete.
     Done,
     /// Generation failed; user-facing message.

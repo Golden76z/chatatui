@@ -184,6 +184,8 @@ pub struct ProviderInfo {
     pub default_model: Option<String>,
     /// Context window set in the configuration (applies to all its models).
     pub context_window: Option<u64>,
+    /// Prices per million tokens, when configured.
+    pub prices: Option<crate::config::Prices>,
 }
 
 /// Where the context window size comes from.
@@ -228,6 +230,35 @@ pub struct IndexProgress {
     pub total: usize,
     /// File being processed.
     pub current: String,
+}
+
+/// How fast a reply was generated.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Speed {
+    pub tokens: u64,
+    /// From the first token to the end.
+    pub generation_ms: u64,
+    pub first_token_ms: u64,
+}
+
+impl Speed {
+    /// Tokens per second.
+    pub fn per_second(&self) -> u64 {
+        (self.tokens * 1000)
+            .checked_div(self.generation_ms.max(1))
+            .unwrap_or(0)
+    }
+}
+
+/// `0,0123 $` below one unit, `1,24 $` above.
+pub fn format_cost(micros: u64, currency: &str) -> String {
+    let value = micros as f64 / 1_000_000.0;
+    let text = if value < 1.0 {
+        format!("{value:.4}")
+    } else {
+        format!("{value:.2}")
+    };
+    format!("{} {currency}", text.replace('.', ","))
 }
 
 /// A deletion waiting for confirmation.
@@ -323,6 +354,18 @@ pub struct App {
     pub editing: Option<MessageId>,
     /// Offer tools to the model (`/tools`).
     pub tools_enabled: bool,
+    /// Messages sent before (all conversations), oldest first, for `Ctrl+↑`.
+    pub input_history: Vec<String>,
+    /// Position in `input_history` while browsing it, and the text typed before.
+    history_cursor: Option<(usize, String)>,
+    /// Timing of the running request.
+    pub timing: Option<(Option<u64>, u64)>,
+    /// Speed of the last reply: tokens, milliseconds of generation, milliseconds until
+    /// its first token.
+    pub last_speed: Option<Speed>,
+    /// What this conversation's requests cost so far (millionths of `currency`), from the
+    /// provider's prices; since it was opened.
+    pub conversation_cost: Option<(u64, String)>,
     /// Tool calls of this conversation run without asking (`t` in the confirmation).
     tools_always: bool,
     /// Deletion waiting for its command to be run again (`/forget`, `/delete`).
@@ -347,6 +390,7 @@ impl App {
         let providers = resolved
             .iter()
             .map(|p| ProviderInfo {
+                prices: p.prices.clone(),
                 id: p.id.clone(),
                 label: p.label.clone(),
                 local: p.local,
@@ -395,6 +439,11 @@ impl App {
             queued: None,
             editing: None,
             tools_enabled: config.tools.enabled,
+            input_history: Vec::new(),
+            history_cursor: None,
+            timing: None,
+            last_speed: None,
+            conversation_cost: None,
             tools_always: false,
             request_usage: Usage::default(),
             session_seed: 0,
@@ -493,6 +542,22 @@ impl App {
             .as_deref()
             .map(crate::rag::retrieve::collection_names)
             .unwrap_or_default()
+    }
+
+    /// Tokens per second of the reply being streamed (once tokens flow).
+    pub fn live_speed(&self) -> Option<u64> {
+        let generation = self.generation?;
+        let (Some(first), elapsed) = self.timing? else {
+            return None;
+        };
+        let written = self
+            .conversation
+            .messages()
+            .iter()
+            .find(|m| m.id == generation.message_id)
+            .map_or(0, |m| tokens::estimate(&m.content));
+        let ms = elapsed.saturating_sub(first);
+        (ms >= 500).then(|| written * 1000 / ms)
     }
 
     /// How full the context is, in percent of the window (`None` when the window is
@@ -903,6 +968,8 @@ impl App {
             Action::Edit(key) => {
                 if self.input.input(key) {
                     self.input_changed();
+                    // Editing a recalled message makes it the draft.
+                    self.history_cursor = None;
                 }
                 Vec::new()
             }
@@ -945,7 +1012,34 @@ impl App {
             Action::Init => {
                 let mut effects = self.detect_window();
                 effects.push(Effect::CheckCollections);
+                effects.push(Effect::Store(StoreRequest::InputHistory));
                 effects
+            }
+            Action::HistoryPrevious => {
+                let position = match &self.history_cursor {
+                    Some((0, _)) => return Vec::new(),
+                    Some((position, _)) => position - 1,
+                    None if self.input_history.is_empty() => return Vec::new(),
+                    None => {
+                        let draft = self.input_text();
+                        self.history_cursor = Some((self.input_history.len(), draft));
+                        self.input_history.len() - 1
+                    }
+                };
+                self.show_history(position);
+                Vec::new()
+            }
+            Action::HistoryNext => {
+                let Some((position, draft)) = self.history_cursor.clone() else {
+                    return Vec::new();
+                };
+                if position + 1 >= self.input_history.len() {
+                    self.history_cursor = None;
+                    self.set_input(&draft);
+                } else {
+                    self.show_history(position + 1);
+                }
+                Vec::new()
             }
             Action::CollectionsChecked(result) => self.on_collections_checked(result),
             Action::ContextWindowDetected {
@@ -1285,8 +1379,27 @@ impl App {
         }]
     }
 
+    /// Shows the history entry at `position`, keeping the draft saved.
+    fn show_history(&mut self, position: usize) {
+        let Some(text) = self.input_history.get(position).cloned() else {
+            return;
+        };
+        let draft = self
+            .history_cursor
+            .take()
+            .map(|(_, draft)| draft)
+            .unwrap_or_default();
+        self.set_input(&text);
+        self.history_cursor = Some((position, draft));
+    }
+
     /// Sends `text` as the next user message.
     fn send_now(&mut self, text: &str) -> Vec<Effect> {
+        self.history_cursor = None;
+        let trimmed = text.trim_end();
+        if self.input_history.last().map(String::as_str) != Some(trimmed) {
+            self.input_history.push(trimmed.to_owned());
+        }
         let text = text.trim_end();
         if self.conversation_title.is_none() {
             self.conversation_title = Some(title_from(text));
@@ -1305,6 +1418,7 @@ impl App {
         let request_id = RequestId(self.next_request_id);
         self.next_request_id += 1;
         self.request_usage = Usage::default();
+        self.timing = None;
         let job = CompletionJob {
             kind,
             request_id,
@@ -2061,6 +2175,33 @@ impl App {
         effects
     }
 
+    /// Notes how fast the reply came and adds what the request cost.
+    fn record_speed_and_cost(&mut self, reply: MessageId) {
+        let tokens = self.request_usage.output_tokens.unwrap_or_else(|| {
+            self.conversation
+                .messages()
+                .iter()
+                .find(|m| m.id == reply)
+                .map_or(0, |m| tokens::estimate(&m.content))
+        });
+        if let Some((Some(first_token_ms), elapsed_ms)) = self.timing.take() {
+            self.last_speed = Some(Speed {
+                tokens,
+                generation_ms: elapsed_ms.saturating_sub(first_token_ms),
+                first_token_ms,
+            });
+        }
+        let Some(prices) = self.provider_info().and_then(|p| p.prices.clone()) else {
+            return;
+        };
+        let cost = prices
+            .input
+            .cost(self.request_usage.input_tokens.unwrap_or(0))
+            + prices.output.cost(tokens);
+        let total = self.conversation_cost.take().map_or(0, |(c, _)| c) + cost;
+        self.conversation_cost = Some((total, prices.currency));
+    }
+
     /// Clears the running generation, sets the final status of its message and saves it.
     fn finish_generation(&mut self, status: MessageStatus) -> Option<Effect> {
         let generation = self.generation.take()?;
@@ -2109,6 +2250,13 @@ impl App {
                 });
                 Vec::new()
             }
+            LlmEvent::Timing {
+                first_token_ms,
+                elapsed_ms,
+            } => {
+                self.timing = Some((first_token_ms, elapsed_ms));
+                Vec::new()
+            }
             LlmEvent::ToolCall(call) => self.on_tool_call(generation, &call),
             LlmEvent::ToolResult {
                 call_id: _,
@@ -2136,6 +2284,7 @@ impl App {
                 effects
             }
             LlmEvent::Done => {
+                self.record_speed_and_cost(generation.message_id);
                 if let Some(input_tokens) = self.request_usage.input_tokens {
                     self.measured = Some(Measured {
                         input_tokens,
@@ -2191,6 +2340,14 @@ impl App {
                 Vec::new()
             }
             StoreEvent::Loaded(stored) => self.load(stored),
+            StoreEvent::InputHistory(history) => {
+                // Messages sent meanwhile stay at the end.
+                let mut merged = history;
+                merged.extend(std::mem::take(&mut self.input_history));
+                merged.dedup();
+                self.input_history = merged;
+                Vec::new()
+            }
             StoreEvent::Searched {
                 query,
                 results,
@@ -2394,6 +2551,7 @@ impl App {
     ) {
         self.conversation = conversation;
         self.measured = None;
+        self.conversation_cost = None;
         self.editing = None;
         self.tools_always = false;
         // The collection carries over to a new conversation (`load` sets its own).
@@ -3425,7 +3583,8 @@ mod tests {
                     provider: "ollama".into(),
                     model: "llama3.2".into()
                 },
-                Effect::CheckCollections
+                Effect::CheckCollections,
+                Effect::Store(StoreRequest::InputHistory)
             ]
         );
         app.update(Action::ContextWindowDetected {
@@ -3436,7 +3595,10 @@ mod tests {
         assert_eq!(app.context_window(), Some((4_096, WindowSource::Server)));
         assert_eq!(
             app.update(Action::Init),
-            vec![Effect::CheckCollections],
+            vec![
+                Effect::CheckCollections,
+                Effect::Store(StoreRequest::InputHistory)
+            ],
             "window already known"
         );
 
@@ -4429,5 +4591,73 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, Effect::StartIndex { .. }))
         );
+    }
+
+    #[test]
+    fn ctrl_up_recalls_previous_messages_and_keeps_the_draft() {
+        let mut app = app();
+        app.update(Action::Storage(StoreEvent::InputHistory(vec![
+            "ancienne".into(),
+            "hier".into(),
+        ])));
+        let job = send(&mut app, "aujourd'hui");
+        llm(&mut app, job.request_id, LlmEvent::Done);
+        type_text(&mut app, "brouillon");
+
+        app.update(Action::HistoryPrevious);
+        assert_eq!(app.input_text(), "aujourd'hui");
+        app.update(Action::HistoryPrevious);
+        app.update(Action::HistoryPrevious);
+        assert_eq!(app.input_text(), "ancienne");
+        app.update(Action::HistoryPrevious);
+        assert_eq!(app.input_text(), "ancienne", "stops at the oldest");
+        app.update(Action::HistoryNext);
+        assert_eq!(app.input_text(), "hier");
+        app.update(Action::HistoryNext);
+        app.update(Action::HistoryNext);
+        assert_eq!(app.input_text(), "brouillon", "back to the draft");
+        assert!(app.update(Action::HistoryNext).is_empty());
+    }
+
+    #[test]
+    fn speed_and_cost_of_a_reply() {
+        let mut config = Config::default();
+        if let Some(ollama) = config.providers.get_mut("ollama") {
+            ollama.price_input = Some(crate::config::Price(2_000_000));
+            ollama.price_output = Some(crate::config::Price(10_000_000));
+            ollama.currency = Some("€".into());
+        }
+        let mut app = App::new(&config, false);
+        let job = send(&mut app, "Question");
+        token(&mut app, job.request_id, &"mot ".repeat(200));
+        llm(
+            &mut app,
+            job.request_id,
+            LlmEvent::Timing {
+                first_token_ms: Some(500),
+                elapsed_ms: 2_500,
+            },
+        );
+        assert_eq!(app.live_speed(), Some(100), "200 tokens in 2 s");
+        llm(
+            &mut app,
+            job.request_id,
+            LlmEvent::Usage(Usage {
+                input_tokens: Some(10_000),
+                output_tokens: Some(200),
+            }),
+        );
+        llm(&mut app, job.request_id, LlmEvent::Done);
+        let speed = app.last_speed.expect("speed");
+        assert_eq!(
+            (speed.tokens, speed.per_second(), speed.first_token_ms),
+            (200, 100, 500)
+        );
+        // 10k × 2 €/M + 200 × 10 €/M = 0,022 €.
+        assert_eq!(app.conversation_cost, Some((22_000, "€".into())));
+        assert_eq!(format_cost(22_000, "€"), "0,0220 €");
+        assert_eq!(format_cost(1_240_000, "$"), "1,24 $");
+        app.update(Action::NewConversation);
+        assert_eq!(app.conversation_cost, None);
     }
 }

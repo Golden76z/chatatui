@@ -83,6 +83,10 @@ pub enum Action {
     Exported(Result<String, String>),
     /// Answer to a tool call: `always` allows the next ones of this conversation too.
     ToolAnswer { allow: bool, always: bool },
+    /// Ctrl+↑: put the previous message sent in the input.
+    HistoryPrevious,
+    /// Ctrl+↓: the next one (back to the draft after the last).
+    HistoryNext,
     /// Ctrl+Y: copy the last reply.
     CopyLastReply,
     /// Text was handed to the clipboard (`what` describes it).

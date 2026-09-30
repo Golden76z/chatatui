@@ -121,6 +121,8 @@ pub fn map_key(key: KeyEvent, context: KeyContext) -> Option<Action> {
     match key.code {
         KeyCode::PageUp => Some(Action::PageUp),
         KeyCode::PageDown => Some(Action::PageDown),
+        KeyCode::Up if ctrl => Some(Action::HistoryPrevious),
+        KeyCode::Down if ctrl => Some(Action::HistoryNext),
         KeyCode::Home if ctrl => Some(Action::ScrollToTop),
         KeyCode::End if ctrl => Some(Action::ScrollToBottom),
         KeyCode::Up if plain && context.input_empty => Some(Action::ScrollUp(1)),

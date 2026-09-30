@@ -60,8 +60,13 @@ directory (`~/.config/chatatui/config.toml` on Linux):
 
 Provider sections accept `kind` (`openai` or `anthropic`), `label`, `base_url`, `model`,
 `api_key_env` (environment variable holding the key), `api_key` (key in the file; prefer
-the variable), `max_output_tokens` (Anthropic only, default 8192) and `context_window`
-(context size in tokens, for servers that do not report it).
+the variable), `max_output_tokens` (Anthropic only, default 8192), `context_window`
+(context size in tokens, for servers that do not report it), and `price_input` /
+`price_output` / `currency` (price per million tokens, e.g. `3.0` and `15.0`): the status
+bar then shows what the conversation has cost since it was opened (`· 0,0220 €`), and
+`/context` the details. While a reply streams, the status bar shows its speed
+(`◐ Génération… 42 t/s`); `/context` keeps the last one (tokens, seconds, time to first
+token).
 
 ### Context gauge
 
@@ -238,6 +243,7 @@ Start a message with `//` to send text that begins with a slash.
 | `Ctrl+M` / `F2` | Choose the model (type to filter). `Ctrl+M` needs the kitty keyboard protocol |
 | `Ctrl+P` | Command palette |
 | `Ctrl+Y` | Copy the last reply |
+| `Ctrl+↑` / `Ctrl+↓` | Previous / next message sent (all conversations); back to what you were typing after the last |
 | `F1` | Help |
 | `PgUp` / `PgDn`, mouse wheel | Scroll the conversation |
 | `Up` / `Down` (empty input) | Scroll by one line |
