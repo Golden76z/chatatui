@@ -11,6 +11,7 @@ pub mod chunk;
 pub mod embed;
 pub mod extract;
 pub mod indexer;
+pub mod ocr;
 pub mod retrieve;
 pub mod store;
 
@@ -37,6 +38,12 @@ pub struct RagConfig {
     pub keyword_search: bool,
     /// Gitignore-style patterns never indexed (`*.min.js`, `node_modules/`, …).
     pub exclude: Vec<String>,
+    /// Read scanned PDFs with OCR when `tesseract` and `pdftoppm` are installed.
+    pub ocr: bool,
+    /// Tesseract languages, e.g. `fra+eng` (those without data installed are skipped).
+    pub ocr_languages: String,
+    /// At startup, update the collections whose folder changed (`/index` in background).
+    pub auto_index: bool,
 }
 
 impl Default for RagConfig {
@@ -50,6 +57,9 @@ impl Default for RagConfig {
             min_score: 0.3,
             keyword_search: true,
             exclude: Vec::new(),
+            ocr: true,
+            ocr_languages: "fra+eng".into(),
+            auto_index: false,
         }
     }
 }

@@ -45,7 +45,7 @@ fn content(app: &App, overlay: &Overlay, inner_width: usize) -> Option<TextPopup
     match overlay {
         Overlay::Help { .. } => Some(TextPopup {
             title: " Aide ",
-            lines: help::lines(app),
+            lines: help::lines(app, inner_width),
         }),
         Overlay::Context { .. } => Some(TextPopup {
             title: " Contexte ",

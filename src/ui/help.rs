@@ -5,10 +5,15 @@ use ratatui::{
     text::{Line, Span},
 };
 
-use crate::{app::App, commands::COMMANDS, markdown::display_width};
+use crate::{
+    app::App,
+    commands::COMMANDS,
+    markdown::{display_width, wrap_spans},
+};
 
-/// Help text: commands and key bindings.
-pub fn lines(app: &App) -> Vec<Line<'static>> {
+/// Help text for an inner width of `inner_width` columns: commands and key bindings. Long
+/// descriptions wrap under their column.
+pub fn lines(app: &App, inner_width: usize) -> Vec<Line<'static>> {
     let title = Style::default()
         .fg(Color::Cyan)
         .add_modifier(Modifier::BOLD);
@@ -21,18 +26,27 @@ pub fn lines(app: &App) -> Vec<Line<'static>> {
         .map(|c| display_width(&c.usage()))
         .max()
         .unwrap_or(0);
+    let column = width + 4;
+    let room = inner_width.saturating_sub(column).max(12);
     for spec in COMMANDS {
         let usage = spec.usage();
         let padding = " ".repeat(width.saturating_sub(display_width(&usage)) + 2);
-        let mut spans = vec![
-            Span::styled(format!("  {usage}"), bold),
-            Span::raw(padding),
-            Span::raw(spec.description),
-        ];
+        let mut description = vec![Span::raw(spec.description)];
         if let Some(shortcut) = spec.shortcut(app.keyboard_enhanced) {
-            spans.push(Span::styled(format!("  ({shortcut})"), dim));
+            description.push(Span::styled(format!("  ({shortcut})"), dim));
         }
-        lines.push(Line::from(spans));
+        for (i, row) in wrap_spans(&description, room).into_iter().enumerate() {
+            let mut spans = if i == 0 {
+                vec![
+                    Span::styled(format!("  {usage}"), bold),
+                    Span::raw(padding.clone()),
+                ]
+            } else {
+                vec![Span::raw(" ".repeat(column))]
+            };
+            spans.extend(row);
+            lines.push(Line::from(spans));
+        }
     }
     lines.push(Line::styled(
         "  //texte envoie un message qui commence par /",

@@ -43,7 +43,7 @@ pub fn lines(app: &App, width: usize) -> Vec<Line<'static>> {
                     Span::styled(format!(" {}", collection.name), bold),
                     Span::styled(format!("  {}", ago(now - collection.updated_at)), dim),
                 ];
-                if app.rag_collection.as_deref() == Some(collection.name.as_str()) {
+                if app.rag_names().contains(&collection.name.as_str()) {
                     head.push(Span::styled(
                         "  ⌕ cette conversation",
                         Style::default().fg(Color::Blue),

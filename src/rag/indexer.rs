@@ -20,8 +20,9 @@ use tokio_util::sync::CancellationToken;
 use super::{
     chunk::{self, Passage},
     embed::Embedder,
-    extract::{self, FileKind},
+    extract::{self, Extracted, FileKind, NO_TEXT_PDF},
     fingerprint,
+    ocr::Ocr,
     store::{self, Collection},
 };
 use crate::storage::{Store, StoreError};
@@ -50,6 +51,8 @@ pub struct IndexRequest {
     pub types: Option<Vec<String>>,
     /// Gitignore-style patterns left out (`[rag] exclude`).
     pub exclude: Vec<String>,
+    /// OCR for scanned PDFs, when available.
+    pub ocr: Option<Ocr>,
 }
 
 /// Which files of a folder are indexed.
@@ -276,7 +279,11 @@ async fn with_db<T: Send + 'static>(
 }
 
 /// Reads, extracts and splits one file (blocking).
-fn prepare(candidate: &Candidate, chunk_tokens: usize) -> Result<(u64, Vec<Passage>), String> {
+fn prepare(
+    candidate: &Candidate,
+    chunk_tokens: usize,
+    ocr: Option<&Ocr>,
+) -> Result<(u64, Vec<Passage>), String> {
     let limit = match candidate.kind {
         FileKind::Pdf | FileKind::Docx | FileKind::Odt => MAX_DOCUMENT_BYTES,
         FileKind::Markdown | FileKind::Text | FileKind::Code => MAX_TEXT_BYTES,
@@ -286,8 +293,28 @@ fn prepare(candidate: &Candidate, chunk_tokens: usize) -> Result<(u64, Vec<Passa
     }
     let bytes = std::fs::read(&candidate.path).map_err(|e| format!("illisible ({e})"))?;
     let hash = fingerprint(&bytes);
-    let extracted = extract::extract(candidate.kind, &bytes)?;
+    let extracted = match extract::extract(candidate.kind, &bytes) {
+        Err(error) if error == NO_TEXT_PDF => match ocr {
+            Some(ocr) => {
+                let extracted = Extracted {
+                    kind: FileKind::Pdf,
+                    pages: ocr.pdf(&bytes)?,
+                };
+                if extracted.is_empty() {
+                    return Err(format!("{NO_TEXT_PDF} : rien de lisible, même avec l'OCR"));
+                }
+                extracted
+            }
+            None => return Err(no_ocr_reason()),
+        },
+        other => other?,
+    };
     Ok((hash, chunk::split(&extracted, chunk_tokens)))
+}
+
+/// Why a scan was skipped when no OCR is available.
+fn no_ocr_reason() -> String {
+    format!("{NO_TEXT_PDF} : installez tesseract et poppler-utils pour l'OCR")
 }
 
 /// Indexes `request.root` into the database at `db_path`, reporting progress.
@@ -384,19 +411,24 @@ async fn index(
             && p.size == candidate.size
             && p.mtime == candidate.mtime
         {
-            match &p.skipped {
-                Some(reason) => summary
-                    .skipped
-                    .push((candidate.relative.clone(), reason.clone())),
-                None => summary.unchanged += 1,
+            // A scan skipped for lack of OCR is read again once OCR is available.
+            let retry = request.ocr.is_some() && p.skipped.as_deref() == Some(&no_ocr_reason());
+            if !retry {
+                match &p.skipped {
+                    Some(reason) => summary
+                        .skipped
+                        .push((candidate.relative.clone(), reason.clone())),
+                    None => summary.unchanged += 1,
+                }
+                continue;
             }
-            continue;
         }
 
         let chunk_tokens = request.chunk_tokens;
         let prepared = {
             let candidate = candidate.clone();
-            tokio::task::spawn_blocking(move || prepare(&candidate, chunk_tokens))
+            let ocr = request.ocr.clone();
+            tokio::task::spawn_blocking(move || prepare(&candidate, chunk_tokens, ocr.as_ref()))
                 .await
                 .map_err(|e| format!("tâche interrompue ({e})"))?
         };
@@ -451,7 +483,8 @@ async fn index(
         }
 
         summary.passages += passages.len();
-        if previous.is_some() {
+        // A file indexed for the first time after being skipped counts as added.
+        if previous.is_some_and(|p| p.skipped.is_none()) {
             summary.updated += 1;
         } else {
             summary.added += 1;
@@ -493,7 +526,7 @@ mod tests {
     use std::{fs, sync::atomic::Ordering};
 
     use super::*;
-    use crate::rag::embed::HashEmbedder;
+    use crate::rag::{embed::HashEmbedder, store::StoredChunk};
 
     struct Setup {
         _dir: tempfile::TempDir,
@@ -572,7 +605,7 @@ mod tests {
         assert_eq!(report.added, 5);
         assert_eq!(
             report.skipped,
-            vec![("scan.pdf".to_owned(), "PDF sans texte (scan ?)".to_owned())]
+            vec![("scan.pdf".to_owned(), no_ocr_reason())]
         );
         assert!(
             events
@@ -866,5 +899,49 @@ mod tests {
 
         fs::remove_dir_all(&setup.root).expect("remove");
         assert!(check_collections(&setup.db, &[]).expect("check")[0].missing_root);
+    }
+
+    #[tokio::test]
+    async fn scans_are_read_with_ocr_once_it_is_available() {
+        let Some(ocr) = Ocr::detect("eng") else {
+            eprintln!("tesseract or pdftoppm missing: skipped");
+            return;
+        };
+        let setup = setup();
+        fs::copy(
+            format!(
+                "{}/tests/fixtures/rag/scan-text.pdf",
+                env!("CARGO_MANIFEST_DIR")
+            ),
+            setup.root.join("scan-text.pdf"),
+        )
+        .expect("copy");
+        let embedder = Arc::new(HashEmbedder::default());
+        let without = index_request(&setup, embedder.clone(), request(&setup)).await;
+        let skipped: Vec<&str> = without.skipped.iter().map(|s| s.0.as_str()).collect();
+        assert_eq!(skipped, vec!["scan-text.pdf", "scan.pdf"]);
+
+        // OCR now installed: the skipped scans are read again, unchanged files are not.
+        let with = IndexRequest {
+            ocr: Some(ocr),
+            ..request(&setup)
+        };
+        let report = index_request(&setup, embedder, with).await;
+        assert_eq!(report.added, 1, "{report:?}");
+        assert_eq!(
+            report.skipped.len(),
+            1,
+            "the blank page has nothing to read"
+        );
+        assert!(report.skipped[0].1.contains("même avec l'OCR"));
+        let conn = Store::open(&setup.db).expect("db").into_connection();
+        let chunks = store::load_chunks(&conn, "docs").expect("chunks");
+        let scan: Vec<&StoredChunk> = chunks
+            .iter()
+            .filter(|c| c.path == "scan-text.pdf")
+            .collect();
+        assert_eq!(scan.len(), 2, "one passage per page");
+        assert_eq!(scan[1].location, "p. 2");
+        assert!(scan[1].text.contains("RefCell"));
     }
 }

@@ -297,8 +297,10 @@ pub struct App {
     pub last_index: Option<IndexReport>,
     /// Indexing settings (shown in `/collections`).
     pub rag: RagConfig,
-    /// Collection searched for each reply of this conversation (`/rag`).
+    /// Collections searched for each reply of this conversation (`/rag`), comma-separated.
     pub rag_collection: Option<String>,
+    /// Collections waiting to be updated automatically (`[rag] auto_index`).
+    index_queue: Vec<String>,
     /// Collection asked for with `/rag`, applied once the collection list confirms it.
     pending_rag: Option<String>,
     /// Passages retrieved for the last reply of this conversation.
@@ -371,6 +373,7 @@ impl App {
             rag: config.rag.clone(),
             rag_collection: None,
             pending_rag: None,
+            index_queue: Vec::new(),
             retrieved: None,
             stale: Vec::new(),
             collections_checked: false,
@@ -459,6 +462,14 @@ impl App {
                 measured: false,
             },
         }
+    }
+
+    /// The collections searched for each reply (`/rag`).
+    pub fn rag_names(&self) -> Vec<&str> {
+        self.rag_collection
+            .as_deref()
+            .map(crate::rag::retrieve::collection_names)
+            .unwrap_or_default()
     }
 
     /// How full the context is, in percent of the window (`None` when the window is
@@ -874,10 +885,7 @@ impl App {
                 effects.push(Effect::CheckCollections);
                 effects
             }
-            Action::CollectionsChecked(result) => {
-                self.on_collections_checked(result);
-                Vec::new()
-            }
+            Action::CollectionsChecked(result) => self.on_collections_checked(result),
             Action::ContextWindowDetected {
                 provider,
                 model,
@@ -1188,6 +1196,13 @@ impl App {
                 return Vec::new();
             }
         };
+        if name.contains(',') {
+            self.status = Status::Error(
+                "un nom de collection ne peut pas contenir de virgule : /index <dossier> <nom>"
+                    .into(),
+            );
+            return Vec::new();
+        }
         if name.is_empty() || name.contains('/') || matches!(name.as_str(), "~" | "." | "..") {
             self.status = Status::Error("donnez un nom : /index <dossier> <nom>".into());
             return Vec::new();
@@ -1233,31 +1248,48 @@ impl App {
                 self.stale.retain(|s| s.collection != report.collection);
                 self.status = Status::Info(index_summary(&report));
                 self.last_index = Some(report);
-                self.refresh_collections()
+                let mut effects = self.refresh_collections();
+                effects.extend(self.next_queued_index());
+                effects
             }
             IndexEvent::Failed { collection, error } => {
                 self.indexing = None;
+                self.index_queue.clear();
                 self.status = Status::Error(format!("indexation de « {collection} » : {error}"));
                 self.refresh_collections()
             }
             IndexEvent::Cancelled { collection } => {
                 self.indexing = None;
+                self.index_queue.clear();
                 self.status = Status::Info(format!("indexation de « {collection} » arrêtée"));
                 self.refresh_collections()
             }
         }
     }
 
-    /// `/rag [collection|off]`: shows, changes or turns off the collection searched for
-    /// each reply. A new name is checked against the collection list first.
+    /// Starts updating the next collection of `index_queue`, if any.
+    fn next_queued_index(&mut self) -> Vec<Effect> {
+        if self.indexing.is_some() || self.index_queue.is_empty() {
+            return Vec::new();
+        }
+        let name = self.index_queue.remove(0);
+        // A bare collection name re-indexes its folder; quoted, it may contain spaces.
+        self.start_index(&format!("\"{name}\""))
+    }
+
+    /// `/rag [collection,…|off]`: shows, changes or turns off the collections searched for
+    /// each reply. New names are checked against the collection list first.
     fn choose_rag(&mut self, arg: &str) -> Vec<Effect> {
         match arg {
             "" => {
-                self.status = Status::Info(match &self.rag_collection {
-                    Some(name) => {
-                        format!("réponses à partir de « {name} » (/rag off pour arrêter)")
-                    }
-                    None => "pas de collection : /rag <collection> (voir /collections)".into(),
+                let names = self.rag_names();
+                self.status = Status::Info(if names.is_empty() {
+                    "pas de collection : /rag <collection>[,autre…] (voir /collections)".into()
+                } else {
+                    format!(
+                        "réponses à partir de « {} » (/rag off pour arrêter)",
+                        names.join(" », « ")
+                    )
                 });
                 Vec::new()
             }
@@ -1276,9 +1308,13 @@ impl App {
         }
     }
 
-    /// Uses `name` if it is one of `collections`.
-    fn apply_rag(&mut self, name: &str, collections: &[CollectionSummary]) -> Vec<Effect> {
-        let Some(found) = collections.iter().find(|c| c.name == name) else {
+    /// Uses the collections listed in `value` (`cours,tp`) if they all exist.
+    fn apply_rag(&mut self, value: &str, collections: &[CollectionSummary]) -> Vec<Effect> {
+        let names = crate::rag::retrieve::collection_names(value);
+        let missing = names
+            .iter()
+            .find(|name| !collections.iter().any(|c| c.name == **name));
+        if let Some(name) = missing {
             let known: Vec<&str> = collections.iter().map(|c| c.name.as_str()).collect();
             self.status = Status::Error(if known.is_empty() {
                 format!(
@@ -1291,17 +1327,26 @@ impl App {
                 )
             });
             return Vec::new();
-        };
+        }
+        if names.is_empty() {
+            return Vec::new();
+        }
+        let documents: u64 = collections
+            .iter()
+            .filter(|c| names.contains(&c.name.as_str()))
+            .map(|c| c.documents)
+            .sum();
         let cloud = if self.is_local() {
             ""
         } else {
             " ☁ les extraits seront envoyés au fournisseur"
         };
         self.status = Status::Info(format!(
-            "réponses à partir de « {name} » ({} documents){cloud}",
-            found.documents
+            "réponses à partir de « {} » ({documents} documents){cloud}",
+            names.join(" », « ")
         ));
-        self.set_rag(Some(name.to_owned()))
+        let value = names.join(",");
+        self.set_rag(Some(value))
     }
 
     fn set_rag(&mut self, collection: Option<String>) -> Vec<Effect> {
@@ -1521,14 +1566,27 @@ impl App {
         Vec::new()
     }
 
-    fn on_collections_checked(&mut self, result: Result<Vec<Staleness>, String>) {
+    fn on_collections_checked(&mut self, result: Result<Vec<Staleness>, String>) -> Vec<Effect> {
         // A failed check is not worth an error: indexing reports real problems.
         let Ok(checked) = result else {
-            return;
+            return Vec::new();
         };
         self.stale = checked.into_iter().filter(Staleness::is_stale).collect();
         let first = !self.collections_checked;
         self.collections_checked = true;
+        if first && self.rag.auto_index {
+            // Update them in the background, one after the other.
+            self.index_queue = self
+                .stale
+                .iter()
+                .filter(|s| !s.missing_root)
+                .map(|s| s.collection.clone())
+                .collect();
+            let effects = self.next_queued_index();
+            if !effects.is_empty() {
+                return effects;
+            }
+        }
         if first && matches!(self.status, Status::Ready) {
             if let [only] = self.stale.as_slice() {
                 self.status = Status::Info(format!(
@@ -1544,6 +1602,7 @@ impl App {
                 ));
             }
         }
+        Vec::new()
     }
 
     /// Asks for the collection list when the `/collections` popup is open.
@@ -1871,8 +1930,10 @@ impl App {
                     self.last_index = None;
                 }
                 // The database already cleared it from the stored conversations.
-                if self.rag_collection.as_deref() == Some(name.as_str()) {
-                    self.rag_collection = None;
+                let names = self.rag_names();
+                if names.contains(&name.as_str()) {
+                    let rest: Vec<&str> = names.into_iter().filter(|n| *n != name).collect();
+                    self.rag_collection = (!rest.is_empty()).then(|| rest.join(","));
                     self.retrieved = None;
                 }
                 vec![Effect::Store(StoreRequest::ListCollections)]
@@ -3781,5 +3842,93 @@ mod tests {
         ));
         app.update(Action::Cancel);
         assert_eq!(app.input_text(), "La suite ?");
+    }
+
+    #[test]
+    fn rag_accepts_several_collections() {
+        let mut app = app();
+        app.run_command(CommandId::Rag, "cours, tp");
+        collections_listed(&mut app, &["cours", "tp", "autre"]);
+        assert_eq!(app.rag_collection.as_deref(), Some("cours,tp"));
+        assert_eq!(app.rag_names(), vec!["cours", "tp"]);
+        assert!(
+            matches!(&app.status, Status::Info(m) if m.starts_with("réponses à partir de « cours », « tp » (6 documents)"))
+        );
+
+        app.run_command(CommandId::Rag, "cours,nope");
+        collections_listed(&mut app, &["cours", "tp"]);
+        assert!(matches!(&app.status, Status::Error(m) if m.contains("« nope » introuvable")));
+        assert_eq!(app.rag_collection.as_deref(), Some("cours,tp"), "unchanged");
+
+        app.update(Action::Storage(StoreEvent::CollectionDeleted {
+            name: "cours".into(),
+            found: true,
+        }));
+        assert_eq!(app.rag_collection.as_deref(), Some("tp"));
+        assert!(app.run_command(CommandId::Index, "~/x a,b").is_empty());
+        assert!(matches!(&app.status, Status::Error(m) if m.contains("virgule")));
+    }
+
+    #[test]
+    fn auto_index_updates_changed_collections_one_after_the_other() {
+        let mut config = Config::default();
+        config.rag.auto_index = true;
+        let mut app = App::new(&config, false);
+        let changed = |name: &str| Staleness {
+            collection: name.into(),
+            modified: 1,
+            ..Staleness::default()
+        };
+        let effects = app.update(Action::CollectionsChecked(Ok(vec![
+            changed("cours"),
+            Staleness {
+                collection: "parti".into(),
+                missing_root: true,
+                ..Staleness::default()
+            },
+            changed("tp"),
+        ])));
+        let started = |effects: &[Effect]| -> Vec<String> {
+            effects
+                .iter()
+                .filter_map(|e| match e {
+                    Effect::StartIndex {
+                        collection, root, ..
+                    } => {
+                        assert_eq!(root, collection, "updated by name");
+                        Some(collection.clone())
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(started(&effects), vec!["cours"]);
+        let effects = app.update(Action::Index(IndexEvent::Finished(IndexReport {
+            collection: "cours".into(),
+            ..IndexReport::default()
+        })));
+        assert_eq!(
+            started(&effects),
+            vec!["tp"],
+            "a missing folder is not indexed"
+        );
+        let effects = app.update(Action::Index(IndexEvent::Finished(IndexReport {
+            collection: "tp".into(),
+            ..IndexReport::default()
+        })));
+        assert!(started(&effects).is_empty());
+        assert!(app.stale.iter().all(|s| s.collection == "parti"));
+
+        // A failure stops the queue.
+        let mut app = App::new(&config, false);
+        app.update(Action::CollectionsChecked(Ok(vec![
+            changed("a"),
+            changed("b"),
+        ])));
+        let effects = app.update(Action::Index(IndexEvent::Failed {
+            collection: "a".into(),
+            error: "embeddings : connexion refusée".into(),
+        }));
+        assert!(started(&effects).is_empty());
     }
 }

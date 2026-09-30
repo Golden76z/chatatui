@@ -160,7 +160,8 @@ pub fn lines(app: &App, width: usize) -> Vec<Line<'static>> {
     ));
 
     // Document search.
-    if let Some(collection) = &app.rag_collection {
+    let names = app.rag_names();
+    if !names.is_empty() {
         lines.push(Line::default());
         lines.push(Line::styled(" Documents (/rag)", title));
         let place = if app.is_local() {
@@ -172,8 +173,12 @@ pub fn lines(app: &App, width: usize) -> Vec<Line<'static>> {
             )
         };
         lines.push(Line::from(vec![
-            label("Collection"),
-            Span::raw(collection.clone()),
+            label(if names.len() > 1 {
+                "Collections"
+            } else {
+                "Collection"
+            }),
+            Span::raw(names.join(", ")),
             place,
         ]));
         lines.push(Line::from(vec![

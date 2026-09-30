@@ -47,6 +47,9 @@ auto_compact = false
 # min_score = 0.3        # similarity below which a passage is left out
 # keyword_search = true  # also match the question's words (hybrid search)
 # exclude = ["*.min.js", "node_modules/"]  # never indexed (also: .chatatuiignore files)
+# ocr = true               # read scanned PDFs if tesseract and poppler-utils are installed
+# ocr_languages = "fra+eng"
+# auto_index = false       # at startup, update the collections whose folder changed
 
 # Providers. "ollama", "openai" (ChatGPT) and "claude" are predefined: the sections below
 # only override their settings. Add your own OpenAI-compatible server the same way, e.g.

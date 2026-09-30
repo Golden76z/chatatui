@@ -114,10 +114,14 @@ files, and skipping hidden files), extracts the text of Markdown, text, source c
   and the ones that disappeared are dropped. `Esc` stops a run; what was done is kept.
 - `--types pdf,md,docx` limits a collection to some file types (`code` means every
   source file); the choice is remembered, `--types all` lifts it.
-- Files that cannot be indexed (scanned PDFs, binary files) are reported once with the
+- Scanned PDFs are read with OCR when `tesseract` and `pdftoppm` are installed
+  (`sudo apt install tesseract-ocr tesseract-ocr-fra poppler-utils`); scans skipped
+  before OCR was available are read on the next `/index`.
+- Files that cannot be indexed (binary files, blank scans) are reported once with the
   reason and not retried until they change.
 - At startup, and when `/collections` opens, chatatui checks whether the indexed folders
-  changed and says which collections need an `/index`.
+  changed and says which collections need an `/index`; with `auto_index = true` it
+  updates them itself, in the background.
 - `/forget <name>` deletes a collection's index (asks to confirm; your files are not
   touched).
 
@@ -137,6 +141,9 @@ context_tokens = 3000           # their token budget
 min_score = 0.3                 # similarity (0–1) below which a passage is left out
 keyword_search = true           # also match the question's words (hybrid search)
 exclude = ["*.min.js", "node_modules/"]   # never indexed
+ocr = true                      # read scanned PDFs (if tesseract and pdftoppm are installed)
+ocr_languages = "fra+eng"       # Tesseract languages (missing ones are skipped)
+auto_index = false              # update changed collections at startup
 ```
 
 `/rag <collection>` makes the conversation search that collection before each reply. The
@@ -148,7 +155,9 @@ lists them underneath (`Sources : [1] plan.docx § Séance 2`), keeping only tho
 when it cites any; they are saved with the conversation. `/prompt` shows the passages
 sent, `/context` what they cost, and the status bar shows the collection (`⌕ cours`),
 with ☁ when the provider is in the cloud, since the passages then leave the machine.
-`/rag off` stops; a new conversation keeps the current collection.
+`/rag cours,tp` searches several collections at once (sources then name their
+collection: `cours › plan.docx`). `/rag off` stops; a new conversation keeps the current
+collections.
 
 ## Commands
 
@@ -170,7 +179,7 @@ run), or press `Ctrl+P` for the palette:
 | `/compact` | Ask the model to summarize the history; the summary replaces it in the context |
 | `/index <folder> [name] [--types …]` | Index a folder into a document collection (named after the folder by default), or `/index <name>` to update one; `Tab` completes the path, `Esc` stops |
 | `/collections` | Indexed collections, and the result of the last `/index` |
-| `/rag [collection\|off]` | Answer from a collection of documents (per conversation), or stop |
+| `/rag [collection,…\|off]` | Answer from one or more collections of documents (per conversation), or stop |
 | `/forget <collection>` | Delete a collection's index (run twice to confirm); files are not touched |
 | `/help` | Commands and key bindings (`F1`) |
 | `/quit` | Quit (`Ctrl+C`) |

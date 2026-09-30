@@ -141,6 +141,9 @@ impl Extracted {
     }
 }
 
+/// Error for a PDF without a text layer (usually a scan).
+pub const NO_TEXT_PDF: &str = "PDF sans texte (scan ?)";
+
 /// Extracts the text of `bytes` read from a file of `kind`. Errors are user-facing.
 pub fn extract(kind: FileKind, bytes: &[u8]) -> Result<Extracted, String> {
     let pages = match kind {
@@ -157,7 +160,7 @@ pub fn extract(kind: FileKind, bytes: &[u8]) -> Result<Extracted, String> {
     let extracted = Extracted { kind, pages };
     if extracted.is_empty() {
         return Err(match kind {
-            FileKind::Pdf => "PDF sans texte (scan ?)".into(),
+            FileKind::Pdf => NO_TEXT_PDF.into(),
             _ => "aucun texte".into(),
         });
     }

@@ -167,7 +167,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         id: CommandId::Rag,
         name: "rag",
         aliases: &["documents"],
-        arg: Arg::Optional("<collection>|off"),
+        arg: Arg::Optional("<collection>[,…]|off"),
         description: "Répondre à partir d'une collection de documents",
         shortcut: None,
         legacy_shortcut: None,

@@ -93,9 +93,11 @@ fn with_gauge(app: &App, mut line: Line<'static>) -> Line<'static> {
 
 /// Appends the collection searched for replies (`/rag`); flagged when it goes to the cloud.
 fn with_rag(app: &App, mut line: Line<'static>) -> Line<'static> {
-    let Some(collection) = &app.rag_collection else {
+    let names = app.rag_names();
+    if names.is_empty() {
         return line;
-    };
+    }
+    let collection = names.join(", ");
     line.push_span(Span::styled(" │ ", Style::default().fg(Color::DarkGray)));
     if app.is_local() {
         line.push_span(Span::styled(

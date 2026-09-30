@@ -280,24 +280,25 @@ pub fn list_collections(conn: &Connection) -> Result<Vec<CollectionSummary>, Sto
 /// Changes whenever the passages of a collection do: (count, highest id).
 pub type ChunksVersion = (u64, i64);
 
-/// Ids of the passages of `collection` matching the FTS5 `query`, best first (BM25).
+/// Ids of the passages of `collections` matching the FTS5 `query`, best first (BM25).
 pub fn keyword_search(
     conn: &Connection,
-    collection: &str,
+    collections: &[&str],
     query: &str,
     limit: usize,
 ) -> Result<Vec<i64>, StoreError> {
+    let names = serde_json::to_string(collections).unwrap_or_else(|_| "[]".into());
     let mut statement = conn.prepare(
         "SELECT f.rowid FROM rag_fts f
          JOIN rag_chunks k ON k.id = f.rowid
          JOIN rag_documents d ON d.id = k.document_id
          JOIN rag_collections c ON c.id = d.collection_id
-         WHERE rag_fts MATCH ?1 AND c.name = ?2
+         WHERE rag_fts MATCH ?1 AND c.name IN (SELECT value FROM json_each(?2))
          ORDER BY bm25(rag_fts)
          LIMIT ?3",
     )?;
     let rows = statement.query_map(
-        params![query, collection, i64::try_from(limit).unwrap_or(i64::MAX)],
+        params![query, names, i64::try_from(limit).unwrap_or(i64::MAX)],
         |r| r.get(0),
     )?;
     Ok(rows.collect::<Result<_, _>>()?)
@@ -363,10 +364,25 @@ pub fn set_types(conn: &Connection, id: i64, types: &[String]) -> Result<(), Sto
 pub fn delete_collection(conn: &mut Connection, name: &str) -> Result<bool, StoreError> {
     let tx = conn.transaction()?;
     let deleted = tx.execute("DELETE FROM rag_collections WHERE name = ?1", [name])?;
-    tx.execute(
-        "UPDATE conversations SET rag_collection = NULL WHERE rag_collection = ?1",
-        [name],
-    )?;
+    // `rag_collection` may list several collections (`cours,tp`).
+    let using: Vec<(String, String)> = {
+        let mut statement = tx.prepare(
+            "SELECT id, rag_collection FROM conversations WHERE rag_collection IS NOT NULL",
+        )?;
+        let rows = statement.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect::<Result<_, _>>()?
+    };
+    for (id, value) in using {
+        let names = super::retrieve::collection_names(&value);
+        if names.contains(&name) {
+            let rest: Vec<&str> = names.into_iter().filter(|n| *n != name).collect();
+            let rest = (!rest.is_empty()).then(|| rest.join(","));
+            tx.execute(
+                "UPDATE conversations SET rag_collection = ?2 WHERE id = ?1",
+                params![id, rest],
+            )?;
+        }
+    }
     tx.commit()?;
     Ok(deleted > 0)
 }
@@ -559,7 +575,7 @@ mod tests {
         write(&mut conn, collection.id, "b.md", "Les élèves rendent le TP");
         write(&mut conn, other.id, "c.md", "XK-42 aussi ici");
         let hits =
-            |conn: &Connection, q: &str| keyword_search(conn, "cours", q, 10).expect("search");
+            |conn: &Connection, q: &str| keyword_search(conn, &["cours"], q, 10).expect("search");
         assert_eq!(
             hits(&conn, "\"xk\"* OR \"42\"*").len(),
             1,
@@ -621,5 +637,28 @@ mod tests {
             list_collections(&conn).expect("list")[0].types,
             vec!["pdf", "md"]
         );
+    }
+
+    #[test]
+    fn deleting_a_collection_keeps_the_others_in_a_conversation() {
+        let mut conn = conn();
+        open_collection(&conn, "cours", "/r", "m", 1).expect("open");
+        conn.execute(
+            "INSERT INTO conversations (id, title, model, created_at, updated_at, rag_collection)
+             VALUES ('c1', 't', 'm', 0, 0, 'cours,tp'), ('c2', 't', 'm', 0, 0, 'tp')",
+            [],
+        )
+        .expect("conversations");
+        assert!(delete_collection(&mut conn, "cours").expect("delete"));
+        let rag = |id: &str| -> Option<String> {
+            conn.query_row(
+                "SELECT rag_collection FROM conversations WHERE id = ?1",
+                [id],
+                |r| r.get(0),
+            )
+            .expect("row")
+        };
+        assert_eq!(rag("c1").as_deref(), Some("tp"));
+        assert_eq!(rag("c2").as_deref(), Some("tp"));
     }
 }

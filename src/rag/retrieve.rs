@@ -12,6 +12,7 @@
 //! Passages are loaded from the database once and kept until the collection changes.
 
 use std::{
+    collections::HashMap,
     path::PathBuf,
     sync::{Arc, Mutex, PoisonError},
 };
@@ -67,17 +68,18 @@ impl From<&RagConfig> for Selection {
 
 /// Passages of one collection, as last loaded.
 struct Loaded {
-    collection: String,
     version: store::ChunksVersion,
     chunks: Arc<Vec<StoredChunk>>,
 }
 
-/// Searches the collection chosen with `/rag`; adds nothing when there is none.
+/// Searches the collections chosen with `/rag` (comma-separated); adds nothing when there
+/// is none.
 pub struct RagContext {
     embedder: Result<Arc<dyn Embedder>, String>,
     database: Result<PathBuf, String>,
     selection: Selection,
-    cache: Mutex<Option<Loaded>>,
+    /// By collection name.
+    cache: Mutex<HashMap<String, Loaded>>,
 }
 
 impl std::fmt::Debug for RagContext {
@@ -102,24 +104,25 @@ impl RagContext {
             embedder,
             database,
             selection,
-            cache: Mutex::new(None),
+            cache: Mutex::new(HashMap::new()),
         }
     }
 
     /// Ids of the passages matching the question's keywords, best first.
     async fn keyword_hits(
         &self,
-        collection: &str,
+        collections: &[&str],
         question: &str,
     ) -> Result<Vec<i64>, ContextError> {
         let Some(query) = fts_query(question) else {
             return Ok(Vec::new());
         };
         let database = self.database.clone().map_err(ContextError)?;
-        let name = collection.to_owned();
+        let names: Vec<String> = collections.iter().map(|c| (*c).to_owned()).collect();
         tokio::task::spawn_blocking(move || {
             let conn = Store::open(&database)?.into_connection();
-            store::keyword_search(&conn, &name, &query, CANDIDATES)
+            let names: Vec<&str> = names.iter().map(String::as_str).collect();
+            store::keyword_search(&conn, &names, &query, CANDIDATES)
         })
         .await
         .map_err(|e| ContextError(format!("recherche interrompue ({e})")))?
@@ -135,10 +138,7 @@ impl RagContext {
         let name = collection.to_owned();
         let cached = {
             let cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
-            cache
-                .as_ref()
-                .filter(|c| c.collection == name)
-                .map(|c| (c.version, Arc::clone(&c.chunks)))
+            cache.get(&name).map(|c| (c.version, Arc::clone(&c.chunks)))
         };
         let loaded = tokio::task::spawn_blocking(move || {
             let conn = Store::open(&database)?.into_connection();
@@ -159,11 +159,16 @@ impl RagContext {
                 "collection « {collection} » introuvable (voir /collections)"
             )));
         };
-        *self.cache.lock().unwrap_or_else(PoisonError::into_inner) = Some(Loaded {
-            collection: collection.to_owned(),
-            version,
-            chunks: Arc::clone(&chunks),
-        });
+        self.cache
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(
+                collection.to_owned(),
+                Loaded {
+                    version,
+                    chunks: Arc::clone(&chunks),
+                },
+            );
         Ok((model, chunks))
     }
 }
@@ -171,9 +176,13 @@ impl RagContext {
 #[async_trait]
 impl ContextProvider for RagContext {
     async fn provide(&self, query: ContextQuery<'_>) -> Result<Context, ContextError> {
-        let Some(collection) = query.collection else {
+        let Some(collections) = query.collection else {
             return Ok(Context::default());
         };
+        let names = collection_names(collections);
+        if names.is_empty() {
+            return Ok(Context::default());
+        }
         let question = search_text(query.history);
         if question.trim().is_empty() {
             return Ok(Context::default());
@@ -182,13 +191,17 @@ impl ContextProvider for RagContext {
             .embedder
             .as_ref()
             .map_err(|e| ContextError(e.clone()))?;
-        let (model, chunks) = self.chunks(collection).await?;
-        if model != embedder.model() {
-            return Err(ContextError(format!(
-                "« {collection} » a été indexée avec {model}, le modèle d'embedding \
-                 configuré est {} : relancez /index",
-                embedder.model()
-            )));
+        let mut groups = Vec::with_capacity(names.len());
+        for name in &names {
+            let (model, chunks) = self.chunks(name).await?;
+            if model != embedder.model() {
+                return Err(ContextError(format!(
+                    "« {name} » a été indexée avec {model}, le modèle d'embedding \
+                     configuré est {} : relancez /index {name}",
+                    embedder.model()
+                )));
+            }
+            groups.push((*name, chunks));
         }
         let vector = embedder
             .embed(std::slice::from_ref(&question))
@@ -197,12 +210,18 @@ impl ContextProvider for RagContext {
             .pop()
             .ok_or_else(|| ContextError("embeddings : réponse vide".into()))?;
         let keyword_hits = if self.selection.keywords {
-            self.keyword_hits(collection, &question).await?
+            self.keyword_hits(&names, &question).await?
         } else {
             Vec::new()
         };
+        // With several collections, each source says which one it comes from.
+        let several = groups.len() > 1;
+        let groups: Vec<(Option<&str>, &[StoredChunk])> = groups
+            .iter()
+            .map(|(name, chunks)| (several.then_some(*name), chunks.as_slice()))
+            .collect();
         Ok(Context {
-            chunks: select(&chunks, &vector, &keyword_hits, self.selection),
+            chunks: select_in(&groups, &vector, &keyword_hits, self.selection),
         })
     }
 }
@@ -262,25 +281,48 @@ pub fn fts_query(question: &str) -> Option<String> {
     )
 }
 
-/// The best passages for the question: `query` is its vector, `keyword_hits` the ids of
-/// the passages matching its words (best first).
+/// The names in a `/rag` value (`cours,tp`), without duplicates.
+pub fn collection_names(value: &str) -> Vec<&str> {
+    let mut names: Vec<&str> = Vec::new();
+    for name in value.split(',').map(str::trim).filter(|n| !n.is_empty()) {
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    names
+}
+
+/// The best passages of one collection for the question: `query` is its vector,
+/// `keyword_hits` the ids of the passages matching its words (best first).
 pub fn select(
     chunks: &[StoredChunk],
     query: &[f32],
     keyword_hits: &[i64],
     selection: Selection,
 ) -> Vec<ContextChunk> {
-    let mut by_meaning: Vec<(f32, &StoredChunk)> = chunks
+    select_in(&[(None, chunks)], query, keyword_hits, selection)
+}
+
+/// [`select`] over several collections; each source is prefixed with its collection's
+/// name when given (`cours › plan.docx`).
+pub fn select_in(
+    groups: &[(Option<&str>, &[StoredChunk])],
+    query: &[f32],
+    keyword_hits: &[i64],
+    selection: Selection,
+) -> Vec<ContextChunk> {
+    let mut by_meaning: Vec<(f32, Option<&str>, &StoredChunk)> = groups
         .iter()
-        .filter(|c| c.vector.len() == query.len())
-        .map(|c| (dot(&c.vector, query), c))
+        .flat_map(|(prefix, chunks)| chunks.iter().map(move |c| (*prefix, c)))
+        .filter(|(_, c)| c.vector.len() == query.len())
+        .map(|(prefix, c)| (dot(&c.vector, query), prefix, c))
         .collect();
     by_meaning.sort_by(|a, b| b.0.total_cmp(&a.0));
 
     // Reciprocal rank fusion of the two rankings.
-    let mut fused: Vec<(f32, &StoredChunk)> = Vec::new();
+    let mut fused: Vec<(f32, Option<&str>, &StoredChunk)> = Vec::new();
     let keyword_rank = |id: i64| keyword_hits.iter().take(CANDIDATES).position(|k| *k == id);
-    for (rank, (score, chunk)) in by_meaning.iter().enumerate() {
+    for (rank, (score, prefix, chunk)) in by_meaning.iter().enumerate() {
         let keyword = keyword_rank(chunk.id);
         let in_meaning = rank < CANDIDATES && *score >= selection.min_score;
         if !in_meaning && keyword.is_none() {
@@ -293,13 +335,13 @@ pub fn select(
         if let Some(position) = keyword {
             fusion += 1.0 / (RRF_K + position as f32 + 1.0);
         }
-        fused.push((fusion, chunk));
+        fused.push((fusion, *prefix, chunk));
     }
     fused.sort_by(|a, b| b.0.total_cmp(&a.0));
 
     let mut picked: Vec<ContextChunk> = Vec::new();
     let mut used = 0;
-    for (_, chunk) in fused {
+    for (_, prefix, chunk) in fused {
         if picked.len() >= selection.top_k {
             break;
         }
@@ -313,7 +355,10 @@ pub fn select(
         }
         used += cost;
         picked.push(ContextChunk {
-            source: chunk.path.clone(),
+            source: match prefix {
+                Some(collection) => format!("{collection} › {}", chunk.path),
+                None => chunk.path.clone(),
+            },
             location: chunk.location.clone(),
             text: chunk.text.clone(),
         });
@@ -548,5 +593,56 @@ mod tests {
             rag.provide(used).await,
             Err(ContextError("clé manquante".into()))
         );
+    }
+
+    #[tokio::test]
+    async fn several_collections_are_searched_together() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let db = indexed(dir.path()).await;
+        let tp = dir.path().join("tp");
+        std::fs::create_dir(&tp).expect("mkdir");
+        std::fs::write(
+            tp.join("tp1.md"),
+            "# TP 1\n\nImplémentez un trait Forme avec un comportement commun.",
+        )
+        .expect("write");
+        indexer::run(
+            IndexRequest {
+                collection: "tp".into(),
+                root: tp,
+                chunk_tokens: 200,
+                ..IndexRequest::default()
+            },
+            db.clone(),
+            Arc::new(HashEmbedder::default()),
+            CancellationToken::new(),
+            |_| {},
+        )
+        .await;
+        let rag = RagContext::new(
+            Ok(Arc::new(HashEmbedder::default())),
+            Ok(db),
+            Selection { top_k: 2, ..WIDE },
+        );
+        let history = question("un trait et un comportement commun");
+        let found = rag
+            .provide(ContextQuery {
+                collection: Some("cours, tp,cours"),
+                history: &history,
+            })
+            .await
+            .expect("search");
+        let mut sources: Vec<&str> = found.chunks.iter().map(|c| c.source.as_str()).collect();
+        sources.sort_unstable();
+        assert_eq!(sources, vec!["cours › traits.md", "tp › tp1.md"]);
+
+        let missing = rag
+            .provide(ContextQuery {
+                collection: Some("cours,autre"),
+                history: &history,
+            })
+            .await;
+        assert!(missing.is_err(), "every collection must exist");
+        assert_eq!(collection_names(" a, b,a ,"), vec!["a", "b"]);
     }
 }

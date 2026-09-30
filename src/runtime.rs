@@ -17,6 +17,7 @@ use crate::{
     rag::{
         embed::{Embedder, OpenAiEmbedder},
         indexer::{self, IndexEvent, IndexRequest},
+        ocr::Ocr,
         retrieve::{RagContext, Selection},
     },
     storage::worker::{Location, StoreHandle},
@@ -53,6 +54,8 @@ struct RagBackend {
     database: Result<PathBuf, String>,
     chunk_tokens: usize,
     exclude: Vec<String>,
+    /// OCR for scanned PDFs (`None`: turned off or tools missing).
+    ocr: Option<Ocr>,
 }
 
 impl fmt::Debug for RagBackend {
@@ -95,6 +98,11 @@ impl RagBackend {
             database,
             chunk_tokens: rag.chunk_tokens,
             exclude: rag.exclude.clone(),
+            ocr: if rag.ocr {
+                Ocr::detect(&rag.ocr_languages)
+            } else {
+                None
+            },
         }
     }
 }
@@ -406,6 +414,7 @@ impl Runtime {
             chunk_tokens: self.rag.chunk_tokens,
             types,
             exclude: self.rag.exclude.clone(),
+            ocr: self.rag.ocr.clone(),
         };
         let token = CancellationToken::new();
         self.running_index = Some(token.clone());
