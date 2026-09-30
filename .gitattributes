@@ -1,0 +1,13 @@
+# Same bytes on every platform: Windows checkouts must not turn LF into CRLF (the test
+# fixtures, snapshots and SSE samples are compared byte for byte).
+* text=auto eol=lf
+
+# Binary test fixtures: never touched (a CRLF conversion breaks a PDF's xref offsets).
+*.pdf binary
+*.docx binary
+*.odt binary
+*.png binary
+*.jpg binary
+
+# A server answering with CRLF line endings, on purpose.
+tests/fixtures/llamacpp.sse -text
