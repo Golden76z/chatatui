@@ -1,0 +1,12 @@
+data: {"id":"chatcmpl-417","object":"chat.completion.chunk","created":1727700000,"model":"llama3.2","system_fingerprint":"fp_ollama","choices":[{"index":0,"delta":{"role":"assistant","content":"Bon"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-417","object":"chat.completion.chunk","created":1727700000,"model":"llama3.2","system_fingerprint":"fp_ollama","choices":[{"index":0,"delta":{"role":"assistant","content":"jour, "},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-417","object":"chat.completion.chunk","created":1727700000,"model":"llama3.2","system_fingerprint":"fp_ollama","choices":[{"index":0,"delta":{"role":"assistant","content":"ça va très bien"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-417","object":"chat.completion.chunk","created":1727700000,"model":"llama3.2","system_fingerprint":"fp_ollama","choices":[{"index":0,"delta":{"role":"assistant","content":" 🦀"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-417","object":"chat.completion.chunk","created":1727700000,"model":"llama3.2","system_fingerprint":"fp_ollama","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":"stop"}]}
+
+data: [DONE]
+

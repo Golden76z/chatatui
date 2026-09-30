@@ -1,0 +1,20 @@
+---
+source: src/ui/mod.rs
+expression: "draw(&mut app, 90, 16).backend()"
+---
+" ▌ Vous                                                                                   "
+" Ancienne question                                                                        "
+"                                                                                          "
+" ▌ Assistant                                                                              "
+" Ancienne réponse                                                                         "
+"                                                                                          "
+" ── contexte vidé : les messages au-dessus ne sont plus envoyés au modèle ──              "
+"                                                                                          "
+" ▌ Fichier joint                                                                          "
+" 📎 docs/plan.md · 4,9 Ko · ≈ 1 250 tokens                                                " Hidden by multi-width symbols: [(2, " ")]
+"                                                                                          "
+"                                                                                          "
+"╭ Message ───────────────────────────────────────────────────────────────────────────────╮"
+"│ Écrivez votre message…                                                                 │"
+"╰────────────────────────────────────────────────────────────────────────────────────────╯"
+" ● fichier joint : plan.md (≈ 1 250 tokens) │ Ollama › llama3.2 │ ctx ≈1,3k               "

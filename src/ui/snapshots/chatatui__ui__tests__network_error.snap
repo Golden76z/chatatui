@@ -1,0 +1,16 @@
+---
+source: src/ui/mod.rs
+expression: "draw(&mut app, 70, 12).backend()"
+---
+" ▌ Vous                                                               "
+" Allô ?                                                               "
+"                                                                      "
+" ▌ Assistant                                                          "
+" ✖ Ollama injoignable sur http://localhost:11434/v1                   "
+"                                                                      "
+"                                                                      "
+"                                                                      "
+"╭ Message ───────────────────────────────────────────────────────────╮"
+"│ Écrivez votre message…                                             │"
+"╰────────────────────────────────────────────────────────────────────╯"
+" ✖ Ollama injoignable sur http://localhost:11434/v1 │ Ollama › llama3."

@@ -1,0 +1,20 @@
+---
+source: src/ui/mod.rs
+expression: "draw(&mut app, 80, 16).backend()"
+---
+"                                                                                "
+"     ╭ Commandes ─────────────────────────────────────────────────────────╮     "
+"     │ Tapez pour filtrer…                                                │     "
+"     │                                                                    │     "
+"     │▌ /new            Nouvelle conversation                      Ctrl+N │     "
+"     │  /history        Liste des conversations                    Ctrl+L │     "
+"     │  /model [nom]    Choisir le modèle (ou le nommer directement) Ctrl+│     "
+"     │  /context        Taille du contexte et détail                      │     "
+"     │  /prompt         Voir exactement ce qui part au modèle             │     "
+"     │  /add <fichier>  Joindre un fichier texte au contexte (Tab complète│     "
+"     │  /clear          Vider le contexte (l'historique reste affiché)    │     "
+"     │  /compact        Résumer l'historique pour libérer le contexte     │     "
+"╭ Mes│  /help           Commandes et raccourcis                        F1 │────╮"
+"│ Écr│  /quit           Quitter                                    Ctrl+C │    │"
+"╰────╰────────────────────────────────────── Entrée lancer · Échap fermer ╯────╯"
+" ● Prêt │ Ollama › llama3.2          ↑↓ choisir · Entrée valider · Échap fermer "

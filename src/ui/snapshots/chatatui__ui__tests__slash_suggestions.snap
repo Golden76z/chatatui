@@ -1,0 +1,18 @@
+---
+source: src/ui/mod.rs
+expression: "draw(&mut app, 80, 14).backend()"
+---
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                    chatatui                                    "
+"                           modèle : Ollama › llama3.2                           "
+"                                                                                "
+"╭ Commandes ────────────────────────────────╮                                   "
+"│ /history  Liste des conversations  Ctrl+L │                           e.      "
+"│▌/help     Commandes et raccourcis  F1     │                                   "
+"╰───────────────────────────────────────────╯                                   "
+"╭ Message ─────────────────────────────────────────────────────────────────────╮"
+"│/h                                                                            │"
+"╰──────────────────────────────────────────────────────────────────────────────╯"
+" ● Prêt │ Ollama › llama3.2                       Tab compléter · Entrée lancer "

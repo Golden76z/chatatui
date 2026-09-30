@@ -1,0 +1,33 @@
+---
+source: src/markdown/render.rs
+expression: "text(&render(SAMPLE, 40))"
+---
+Titre principal
+
+Du texte avec du gras, de l'italique, du
+code et un lien (https://ratatui.rs).
+
+Liste
+
+• premier élément assez long pour être
+  replié sur la ligne suivante
+• second
+  1. imbriqué un
+  2. imbriqué deux
+• [x] tâche faite
+
+│ Une citation sur deux lignes.
+
+▎ rust
+▎ fn main() {
+▎     println!("bonjour");
+▎ }
+
+Langage │ Typage
+────────┼──────────
+Rust    │ statique
+Python  │ dynamique
+
+────────────────────────────────────────
+
+Fin.

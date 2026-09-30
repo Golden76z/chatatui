@@ -1,0 +1,20 @@
+---
+source: src/ui/mod.rs
+expression: "draw(&mut app, 70, 16).backend()"
+---
+"                                                                      "
+"                                                                      "
+"                                                                      "
+"                                                                      "
+"                               chatatui                               "
+"                      modèle : Ollama › llama3.2                      "
+"                                                                      "
+"             Écrivez un message ci-dessous pour commencer.            "
+"  Tapez / pour les commandes, Ctrl+P pour la palette, F1 pour l'aide. "
+"                                                                      "
+"                                                                      "
+"                                                                      "
+"╭ Message ───────────────────────────────────────────────────────────╮"
+"│ Écrivez votre message…                                             │"
+"╰────────────────────────────────────────────────────────────────────╯"
+" ● Prêt │ Ollama › llama3.2                      / commandes · Ctrl+P "

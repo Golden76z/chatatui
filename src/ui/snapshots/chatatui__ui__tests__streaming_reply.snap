@@ -1,0 +1,16 @@
+---
+source: src/ui/mod.rs
+expression: "draw(&mut app, 70, 12).backend()"
+---
+" ▌ Vous                                                               "
+" Raconte une histoire                                                 "
+"                                                                      "
+" ▌ Assistant                                                          "
+" Il était une fois▍                                                   "
+"                                                                      "
+"                                                                      "
+"                                                                      "
+"╭ Message ───────────────────────────────────────────────────────────╮"
+"│ Écrivez votre message…                                             │"
+"╰────────────────────────────────────────────────────────────────────╯"
+" ◐ Génération… │ Ollama › llama3.2 │ ctx ≈32            Échap annuler "
