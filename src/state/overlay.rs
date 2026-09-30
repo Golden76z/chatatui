@@ -27,6 +27,10 @@ pub enum Overlay {
     Mcp {
         scroll: u16,
     },
+    /// Two replies side by side (/compare).
+    Compare {
+        scroll: u16,
+    },
     /// The model asks to run a tool: allow, always allow or refuse.
     ToolConfirm {
         /// What the call does (`lire ~/notes.md`).
@@ -46,6 +50,8 @@ pub enum OverlayKind {
     Text,
     /// A question: Enter / `o` yes, `t` always, Esc / `n` no.
     Confirm,
+    /// Two replies: ← / 1 and → / 2 keep one, arrows scroll.
+    Compare,
 }
 
 impl Overlay {
@@ -59,6 +65,7 @@ impl Overlay {
             | Self::Collections { .. }
             | Self::Mcp { .. } => OverlayKind::Text,
             Self::ToolConfirm { .. } => OverlayKind::Confirm,
+            Self::Compare { .. } => OverlayKind::Compare,
         }
     }
 
@@ -69,7 +76,8 @@ impl Overlay {
             | Self::Context { scroll }
             | Self::Prompt { scroll }
             | Self::Collections { scroll }
-            | Self::Mcp { scroll } => Some(scroll),
+            | Self::Mcp { scroll }
+            | Self::Compare { scroll } => Some(scroll),
             Self::ModelPicker(_) | Self::Palette(_) | Self::ToolConfirm { .. } => None,
         }
     }

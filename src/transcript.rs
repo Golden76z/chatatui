@@ -216,6 +216,15 @@ pub fn message_lines_marked(
 ) -> Vec<Line<'static>> {
     let mut header = header(message.role);
     if let Some((shown, total)) = mark {
+        // With several versions, each reply says which model wrote it.
+        if message.role == Role::Assistant
+            && let Some(model) = &message.source
+        {
+            header.push_span(Span::styled(
+                format!(" · {model}"),
+                Style::default().fg(crate::theme::palette().dim),
+            ));
+        }
         header.push_span(Span::styled(
             format!("  ‹ {shown}/{total} ›  Alt+← Alt+→"),
             Style::default().fg(crate::theme::palette().dim),

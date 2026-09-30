@@ -8,6 +8,7 @@ use crate::{app::App, layout, state::Overlay};
 
 mod chat;
 mod collections_view;
+mod compare_view;
 mod context_view;
 mod find_bar;
 mod help;
@@ -21,7 +22,13 @@ mod suggestions;
 mod text_popup;
 mod tool_confirm;
 
-pub use text_popup::max_scroll as popup_max_scroll;
+/// Largest useful scroll offset of the open popup (0 when none scrolls).
+pub fn popup_max_scroll(app: &App) -> u16 {
+    match app.overlay {
+        Some(Overlay::Compare { .. }) => compare_view::max_scroll(app),
+        _ => text_popup::max_scroll(app),
+    }
+}
 
 /// Draws the whole screen.
 pub fn render(app: &App, frame: &mut Frame) {
@@ -58,6 +65,7 @@ pub fn render(app: &App, frame: &mut Frame) {
         ) => {
             text_popup::render(app, frame, frame.area());
         }
+        Some(Overlay::Compare { .. }) => compare_view::render(app, frame, frame.area()),
         None => {}
     }
 }
@@ -355,6 +363,38 @@ mod tests {
         );
         app.run_command(crate::commands::CommandId::Mcp, "");
         insta::assert_snapshot!(draw(&mut app, 80, 16).backend());
+    }
+
+    #[test]
+    fn compare_shows_both_replies_side_by_side() {
+        let mut app = App::new(&Config::default(), false);
+        app.update(Action::Resize {
+            width: 80,
+            height: 14,
+        });
+        let id = stream(&mut app, "Trier un Vec ?", &["Utilisez `v.sort()`."]);
+        app.update(Action::Llm {
+            request_id: id,
+            event: LlmEvent::Done,
+        });
+        let effects = app.run_command(crate::commands::CommandId::Compare, "qwen2.5:7b");
+        let request_id = effects
+            .iter()
+            .find_map(|e| match e {
+                Effect::StartCompletion(job) => Some(job.request_id),
+                _ => None,
+            })
+            .expect("a job");
+        app.update(Action::Llm {
+            request_id,
+            event: LlmEvent::Token("`sort_unstable()` est plus rapide.".into()),
+        });
+        insta::assert_snapshot!("compare_streaming", draw(&mut app, 80, 14).backend());
+        app.update(Action::Llm {
+            request_id,
+            event: LlmEvent::Done,
+        });
+        insta::assert_snapshot!("compare_done", draw(&mut app, 80, 14).backend());
     }
 
     #[test]

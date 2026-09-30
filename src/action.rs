@@ -89,6 +89,8 @@ pub enum Action {
     PreviousVersion,
     /// Alt+→: the next version.
     NextVersion,
+    /// In `/compare`: keep the new reply (`true`) or the previous one.
+    CompareKeep(bool),
     /// Ctrl+F: open the find bar (next match when it is open).
     OpenFind,
     /// A character typed in the find bar.

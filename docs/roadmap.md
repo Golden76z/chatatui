@@ -23,8 +23,8 @@
   match), wider list and command suggestions.
 - **J29**: find in the conversation (`Ctrl+F`).
 - **J30**: MCP servers (`[mcp.<name>]`, `/mcp`).
+- **J31**: `/compare <model>`, two replies side by side.
 
 ## Next
 
 - MCP over HTTP (remote servers), and `tools/list_changed` notifications.
-- `/compare <model>`: the same question to a second model, both replies side by side.

@@ -24,6 +24,7 @@ pub enum CommandId {
     Mcp,
     Edit,
     Retry,
+    Compare,
     Export,
     Find,
     Help,
@@ -270,6 +271,15 @@ pub const COMMANDS: &[CommandSpec] = &[
         legacy_shortcut: None,
     },
     CommandSpec {
+        id: CommandId::Compare,
+        name: "compare",
+        aliases: &["comparer"],
+        arg: Arg::Required("<modèle>"),
+        description: "Comparer la dernière réponse avec celle d'un autre modèle",
+        shortcut: None,
+        legacy_shortcut: None,
+    },
+    CommandSpec {
         id: CommandId::Find,
         name: "find",
         aliases: &["chercher"],
@@ -469,7 +479,7 @@ mod tests {
         assert_eq!(names(&suggestions("/h")), vec!["history", "help"]);
         assert_eq!(
             names(&suggestions("/co")),
-            vec!["context", "compact", "collections", "copy"]
+            vec!["context", "compact", "collections", "copy", "compare"]
         );
         assert_eq!(
             names(&suggestions("/a")),
@@ -502,7 +512,7 @@ mod tests {
         );
         assert_eq!(
             names(&search("/mod")),
-            vec!["model", "prompt", "tools", "edit", "retry"],
+            vec!["model", "prompt", "tools", "edit", "retry", "compare"],
             "« modèle » in a description"
         );
         assert_eq!(search("").len(), COMMANDS.len());

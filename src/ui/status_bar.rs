@@ -194,6 +194,12 @@ fn hint_candidates(app: &App) -> Vec<String> {
                 "Entrée · t · Échap ".into(),
             ];
         }
+        Some(Overlay::Compare { .. }) => {
+            return vec![
+                "comparaison : la réponse non gardée reste une version (Alt+← / Alt+→) ".into(),
+                "Échap fermer ".into(),
+            ];
+        }
         Some(Overlay::ModelPicker(_) | Overlay::Palette(_)) => {
             return vec![
                 "↑↓ choisir · Entrée valider · Échap fermer ".into(),

@@ -315,6 +315,8 @@ pub struct App {
     pub preview: Option<Preview>,
     /// The find bar (Ctrl+F), when open.
     pub find: Option<Find>,
+    /// The comparison shown by `/compare`.
+    pub compare: Option<Comparison>,
     /// Conversation whose preview was requested and has not arrived yet.
     preview_requested: Option<ConversationId>,
     /// The open popup (model picker, palette, help), if any.
@@ -429,6 +431,7 @@ impl App {
             preview: None,
             preview_requested: None,
             find: None,
+            compare: None,
             overlay: None,
             suggestion: 0,
             suggestions_dismissed: false,
@@ -703,6 +706,9 @@ impl App {
         );
         let mut effects = self.apply(action);
         effects.extend(self.sync_preview());
+        if !matches!(self.overlay, Some(Overlay::Compare { .. })) {
+            self.compare = None;
+        }
         if !is_token {
             self.refresh_view();
         }
@@ -954,7 +960,8 @@ impl App {
                     | Overlay::Context { .. }
                     | Overlay::Prompt { .. }
                     | Overlay::Collections { .. }
-                    | Overlay::Mcp { .. },
+                    | Overlay::Mcp { .. }
+                    | Overlay::Compare { .. },
                 ) => {
                     self.overlay = None;
                     Vec::new()
@@ -1169,6 +1176,7 @@ impl App {
                 Vec::new()
             }
             Action::OpenFind => self.open_find(None),
+            Action::CompareKeep(new) => self.keep_compared(new),
             Action::FindType(c) => self.find_edit(|query| query.push(c)),
             Action::FindBackspace => self.find_edit(|query| {
                 query.pop();
@@ -1317,6 +1325,7 @@ impl App {
             CommandId::Edit => self.start_edit(),
             CommandId::Retry => self.retry(arg.trim()),
             CommandId::Export => self.export(arg.trim()),
+            CommandId::Compare => self.compare(arg.trim()),
             CommandId::Mcp => {
                 self.overlay = Some(Overlay::Mcp { scroll: 0 });
                 Vec::new()
@@ -1525,6 +1534,14 @@ impl App {
         if target == 0 || target > total {
             return Vec::new();
         }
+        self.show_version(after, target)
+    }
+
+    /// Shows version `target` of what follows `after`, keeping the one shown as a version.
+    fn show_version(&mut self, after: Option<MessageId>, target: usize) -> Vec<Effect> {
+        let Some((shown, total)) = self.versions_at(after) else {
+            return Vec::new();
+        };
         let Some(index) = self
             .tails
             .iter()
@@ -1734,6 +1751,81 @@ impl App {
         effects
     }
 
+    /// `/compare <model>`: the last question answered again by `model`, both replies
+    /// side by side; the one not kept stays as a version.
+    fn compare(&mut self, arg: &str) -> Vec<Effect> {
+        if self.is_generating() {
+            self.status = Status::Error("attendez la fin de la réponse (ou Échap)".into());
+            return Vec::new();
+        }
+        if arg.is_empty() {
+            self.status = Status::Error(
+                "usage : /compare <modèle> (ex. /compare qwen2.5:7b, /compare claude)".into(),
+            );
+            return Vec::new();
+        }
+        let Some(reply) = self
+            .conversation
+            .context_messages()
+            .last()
+            .filter(|m| m.role == Role::Assistant)
+            .map(|m| m.id)
+        else {
+            self.status = Status::Error("aucune réponse à comparer".into());
+            return Vec::new();
+        };
+        let (provider, model) = self.resolve_model_arg(arg);
+        if model.is_empty() {
+            self.status = Status::Error(format!(
+                "{} : précisez le modèle (/compare {provider} <modèle>)",
+                self.provider_label(&provider)
+            ));
+            return Vec::new();
+        }
+        let after = self.conversation.before(reply);
+        let previous = self.versions_at(after).map_or(1, |(shown, _)| shown);
+        let mut effects = self.truncate_from(reply);
+        effects.push(self.start_job_with(
+            JobKind::Reply,
+            Role::Assistant,
+            provider.clone(),
+            model.clone(),
+        ));
+        self.compare = Some(Comparison {
+            after,
+            previous,
+            provider,
+            model,
+        });
+        self.overlay = Some(Overlay::Compare { scroll: 0 });
+        effects
+    }
+
+    /// Keeps one reply of the comparison: the new one (and its model), or the previous.
+    fn keep_compared(&mut self, new: bool) -> Vec<Effect> {
+        let Some(comparison) = self.compare.clone() else {
+            return Vec::new();
+        };
+        if self.is_generating() {
+            self.status = Status::Error("attendez la fin de la réponse (ou Échap)".into());
+            return Vec::new();
+        }
+        self.overlay = None;
+        self.compare = None;
+        if new {
+            let effects = self.set_selection(&comparison.provider, &comparison.model);
+            self.status = Status::Info(format!(
+                "réponse de {} gardée (l'autre : Alt+←)",
+                self.model_display()
+            ));
+            effects
+        } else {
+            let effects = self.show_version(comparison.after, comparison.previous);
+            self.status = Status::Info("réponse précédente gardée (l'autre : Alt+→)".into());
+            effects
+        }
+    }
+
     /// `/export [file]`: writes the conversation as Markdown.
     fn export(&mut self, path: &str) -> Vec<Effect> {
         if self.conversation.is_empty() {
@@ -1791,6 +1883,18 @@ impl App {
 
     /// Starts streaming into a new `role` message, from the messages in the context.
     fn start_job(&mut self, kind: JobKind, role: Role) -> Effect {
+        let (provider, model) = (self.provider.clone(), self.model.clone());
+        self.start_job_with(kind, role, provider, model)
+    }
+
+    /// Starts a job answered by `provider` / `model` (not necessarily the current ones).
+    fn start_job_with(
+        &mut self,
+        kind: JobKind,
+        role: Role,
+        provider: String,
+        model: String,
+    ) -> Effect {
         let request_id = RequestId(self.next_request_id);
         self.next_request_id += 1;
         self.request_usage = Usage::default();
@@ -1798,8 +1902,8 @@ impl App {
         let job = CompletionJob {
             kind,
             request_id,
-            provider: self.provider.clone(),
-            model: self.model.clone(),
+            provider: provider.clone(),
+            model: model.clone(),
             system_prompt: self.active_system_prompt().to_owned(),
             history: self.conversation.context_messages().to_vec(),
             rag_collection: match kind {
@@ -1809,6 +1913,13 @@ impl App {
             tools: kind == JobKind::Reply && self.tools_enabled,
         };
         let message_id = self.conversation.push(role, "", MessageStatus::Streaming);
+        // A reply remembers its model (shown with its versions and in /compare).
+        let label = format!("{} › {model}", self.provider_label(&provider));
+        if role == Role::Assistant
+            && let Some(message) = self.conversation.get_mut(message_id)
+        {
+            message.source = Some(label);
+        }
         // Sending a message brings the view back to the latest content.
         self.scroll.to_bottom();
         self.generation = Some(Generation {
@@ -2548,9 +2659,19 @@ impl App {
         }
         self.transcript.invalidate(generation.message_id);
         let effects: Vec<Effect> = self.save(generation.message_id).into_iter().collect();
+        let model = self
+            .conversation
+            .messages()
+            .iter()
+            .rev()
+            .find(|m| m.role == Role::Assistant)
+            .and_then(|m| m.source.clone());
         let reply = self
             .conversation
             .push(Role::Assistant, "", MessageStatus::Streaming);
+        if let Some(message) = self.conversation.get_mut(reply) {
+            message.source = model;
+        }
         self.generation = Some(Generation {
             message_id: reply,
             ..generation
@@ -2821,23 +2942,26 @@ impl App {
 
     /// `/model <arg>`: `model`, `provider` (its default model) or `provider model`.
     fn set_model_from_arg(&mut self, arg: &str) -> Vec<Effect> {
+        let (provider, model) = self.resolve_model_arg(arg);
+        self.set_selection(&provider, &model)
+    }
+
+    /// Provider and model named by `arg`: `qwen2.5` (current provider), `claude` (its
+    /// default model) or `claude claude-sonnet-4-5`.
+    fn resolve_model_arg(&self, arg: &str) -> (String, String) {
         let find = |word: &str| {
             self.providers
                 .iter()
                 .find(|p| p.id.eq_ignore_ascii_case(word) || p.label.eq_ignore_ascii_case(word))
-                .cloned()
         };
         let (first, rest) = arg.split_once(char::is_whitespace).unwrap_or((arg, ""));
         match (find(first), rest.trim()) {
-            (Some(provider), "") => {
-                let model = provider.default_model.clone().unwrap_or_default();
-                self.set_selection(&provider.id, &model)
-            }
-            (Some(provider), model) => self.set_selection(&provider.id, model),
-            (None, _) => {
-                let provider = self.provider.clone();
-                self.set_selection(&provider, arg)
-            }
+            (Some(provider), "") => (
+                provider.id.clone(),
+                provider.default_model.clone().unwrap_or_default(),
+            ),
+            (Some(provider), model) => (provider.id.clone(), model.to_owned()),
+            (None, _) => (self.provider.clone(), arg.to_owned()),
         }
     }
 
@@ -2955,6 +3079,16 @@ impl App {
         self.find = None;
         self.status = Status::Ready;
     }
+}
+
+/// A `/compare`: the previous reply kept as version `previous` of what follows `after`,
+/// the new one from `provider` / `model` shown.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Comparison {
+    pub after: Option<MessageId>,
+    pub previous: usize,
+    pub provider: String,
+    pub model: String,
 }
 
 /// A conversation shown while it is highlighted in the list (not loaded: the current
@@ -5058,6 +5192,83 @@ mod tests {
         assert_eq!(app.find.as_ref().map(|f| f.matches.len()), Some(1));
         app.update(Action::ToggleSidebar);
         assert!(app.find.is_none(), "the list has its own search");
+    }
+
+    fn started_job(effects: &[Effect]) -> CompletionJob {
+        effects
+            .iter()
+            .find_map(|e| match e {
+                Effect::StartCompletion(job) => Some(job.clone()),
+                _ => None,
+            })
+            .expect("a job")
+    }
+
+    #[test]
+    fn compare_shows_two_replies_and_keeps_the_chosen_one() {
+        let mut app = app();
+        assert!(
+            app.run_command(CommandId::Compare, "qwen2.5:7b").is_empty(),
+            "no reply yet"
+        );
+        let job = send(&mut app, "Question");
+        token(&mut app, job.request_id, "Réponse A");
+        llm(&mut app, job.request_id, LlmEvent::Done);
+        let first_model = app.model.clone();
+        assert!(app.run_command(CommandId::Compare, "").is_empty());
+        assert!(matches!(&app.status, Status::Error(m) if m.contains("usage")));
+
+        let job = started_job(&app.run_command(CommandId::Compare, "qwen2.5:7b"));
+        assert_eq!(job.model, "qwen2.5:7b");
+        let history: Vec<&str> = job.history.iter().map(|m| m.content.as_str()).collect();
+        assert_eq!(
+            history,
+            vec!["Question"],
+            "the same question, without reply A"
+        );
+        assert!(matches!(app.overlay, Some(Overlay::Compare { .. })));
+        assert_eq!(app.model, first_model, "the conversation keeps its model");
+        assert_eq!(
+            app.key_context().overlay,
+            Some(crate::state::OverlayKind::Compare)
+        );
+        assert!(
+            app.update(Action::CompareKeep(false)).is_empty(),
+            "still writing"
+        );
+        assert!(app.compare.is_some());
+        token(&mut app, job.request_id, "Réponse B");
+        llm(&mut app, job.request_id, LlmEvent::Done);
+        let reply = |app: &App| app.conversation.messages()[1].clone();
+        assert_eq!(reply(&app).source.as_deref(), Some("Ollama › qwen2.5:7b"));
+
+        app.update(Action::CompareKeep(false));
+        assert!(app.overlay.is_none() && app.compare.is_none());
+        assert_eq!(reply(&app).content, "Réponse A");
+        let question = app.conversation.messages()[0].id;
+        assert_eq!(app.versions_at(Some(question)), Some((1, 2)));
+        assert_eq!(app.model, first_model);
+
+        // Compare again and keep the new reply: its model is used from now on.
+        let job = started_job(&app.run_command(CommandId::Compare, "qwen2.5:7b"));
+        token(&mut app, job.request_id, "Réponse C");
+        llm(&mut app, job.request_id, LlmEvent::Done);
+        let effects = app.update(Action::CompareKeep(true));
+        assert_eq!(reply(&app).content, "Réponse C");
+        assert_eq!(app.model, "qwen2.5:7b");
+        assert!(
+            effects
+                .iter()
+                .any(|e| matches!(e, Effect::Store(StoreRequest::SetModel { .. })))
+        );
+        assert_eq!(app.versions_at(Some(question)), Some((3, 3)));
+
+        // Esc closes the comparison on the new reply.
+        let job = started_job(&app.run_command(CommandId::Compare, "llama3.2"));
+        llm(&mut app, job.request_id, LlmEvent::Done);
+        app.update(Action::Cancel);
+        assert!(app.compare.is_none());
+        assert_eq!(app.versions_at(Some(question)), Some((4, 4)));
     }
 
     #[test]

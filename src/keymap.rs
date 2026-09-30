@@ -66,6 +66,18 @@ pub fn map_key(key: KeyEvent, context: KeyContext) -> Option<Action> {
                 _ => None,
             };
         }
+        Some(OverlayKind::Compare) => {
+            return match key.code {
+                KeyCode::Left | KeyCode::Char('1') => Some(Action::CompareKeep(false)),
+                KeyCode::Right | KeyCode::Char('2') => Some(Action::CompareKeep(true)),
+                KeyCode::Up => Some(Action::OverlayUp),
+                KeyCode::Down => Some(Action::OverlayDown),
+                KeyCode::PageUp => Some(Action::OverlayPageUp),
+                KeyCode::PageDown => Some(Action::OverlayPageDown),
+                KeyCode::Esc => Some(Action::Cancel),
+                _ => None,
+            };
+        }
         Some(OverlayKind::Text) => {
             return match key.code {
                 KeyCode::Up => Some(Action::OverlayUp),
@@ -191,6 +203,22 @@ mod tests {
             map_key(key(KeyCode::Char('l'), KeyModifiers::CONTROL)),
             Some(Action::ToggleSidebar)
         );
+    }
+
+    #[test]
+    fn compare_keys() {
+        let context = KeyContext {
+            overlay: Some(OverlayKind::Compare),
+            ..KeyContext::default()
+        };
+        let map = |code| super::map_key(key(code, KeyModifiers::NONE), context);
+        assert_eq!(map(KeyCode::Left), Some(Action::CompareKeep(false)));
+        assert_eq!(map(KeyCode::Char('1')), Some(Action::CompareKeep(false)));
+        assert_eq!(map(KeyCode::Right), Some(Action::CompareKeep(true)));
+        assert_eq!(map(KeyCode::Char('2')), Some(Action::CompareKeep(true)));
+        assert_eq!(map(KeyCode::Down), Some(Action::OverlayDown));
+        assert_eq!(map(KeyCode::Esc), Some(Action::Cancel));
+        assert_eq!(map(KeyCode::Char('x')), None);
     }
 
     #[test]

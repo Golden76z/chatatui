@@ -63,7 +63,10 @@ fn content(app: &App, overlay: &Overlay, inner_width: usize) -> Option<TextPopup
             title: " Serveurs MCP ",
             lines: mcp_view::lines(app, inner_width),
         }),
-        Overlay::ModelPicker(_) | Overlay::Palette(_) | Overlay::ToolConfirm { .. } => None,
+        Overlay::ModelPicker(_)
+        | Overlay::Palette(_)
+        | Overlay::ToolConfirm { .. }
+        | Overlay::Compare { .. } => None,
     }
 }
 
@@ -104,7 +107,10 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
         | Overlay::Prompt { scroll }
         | Overlay::Collections { scroll }
         | Overlay::Mcp { scroll } => *scroll,
-        Overlay::ModelPicker(_) | Overlay::Palette(_) | Overlay::ToolConfirm { .. } => return,
+        Overlay::ModelPicker(_)
+        | Overlay::Palette(_)
+        | Overlay::ToolConfirm { .. }
+        | Overlay::Compare { .. } => return,
     };
     let Some(popup) = content(app, overlay, inner_width(area, overlay)) else {
         return;

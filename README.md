@@ -264,6 +264,7 @@ run), or press `Ctrl+P` for the palette:
 | `/mcp` | MCP servers: state and tools |
 | `/edit` | Put your last message back in the input: sending it replaces it and what followed (`Esc` cancels); the old version is kept (`Alt+←`) |
 | `/retry [model]` | Replace the last reply with a new one, from another model if given (`/retry claude`); the old reply is kept (`Alt+←`) |
+| `/compare <model>` | The last question answered again by another model, both replies side by side (`←`/`1` or `2`/`→` keeps one, `Esc` keeps the new one); the other stays as a version, and each version shows its model |
 | `/export [file.md]` | Save the conversation as Markdown (named after its title by default; never overwrites) |
 | `/find [text]` | Search the open conversation (`Ctrl+F`): matches highlighted, accents and case ignored |
 | `/copy [code [n]]` | Copy the last reply (`Ctrl+Y`), or its code block `n` (default: the last; blocks are numbered when there are several) |

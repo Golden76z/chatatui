@@ -1,0 +1,18 @@
+---
+source: src/ui/mod.rs
+expression: "draw(&mut app, 80, 14).backend()"
+---
+" ▌ Vous                                                                         "
+" ╭ Comparer les réponses ─────────────────────────────────────────────────────╮ "
+" │1 · Ollama › llama3.2                 │2 · Ollama › qwen2.5:7b              │ "
+" │                                      │                                     │ "
+" │▌ Assistant                           │▌ Assistant                          │ "
+" │Utilisez v.sort().                    │sort_unstable() est plus rapide.     │ "
+" │                                      │                                     │ "
+" │                                      │                                     │ "
+" │                                      │                                     │ "
+" │                                      │                                     │ "
+"╭│                                      │                                     │╮"
+"││                                      │                                     ││"
+"╰╰──────── ← ou 1 garder la première · 2 ou → la seconde · ↑↓ défiler · Échap ╯╯"
+" ● Prêt │ Ollama › llama3.2 │ ctx ≈44                              Échap fermer "
