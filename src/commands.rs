@@ -16,6 +16,8 @@ pub enum CommandId {
     Collections,
     Rag,
     Forget,
+    Rename,
+    Delete,
     Help,
     Quit,
 }
@@ -175,6 +177,24 @@ pub const COMMANDS: &[CommandSpec] = &[
         aliases: &["oublier", "supprimer"],
         arg: Arg::Required("<collection>"),
         description: "Supprimer une collection (pas vos fichiers)",
+        shortcut: None,
+        legacy_shortcut: None,
+    },
+    CommandSpec {
+        id: CommandId::Rename,
+        name: "rename",
+        aliases: &["renommer", "titre"],
+        arg: Arg::Required("<titre>"),
+        description: "Renommer la conversation (Ctrl+R dans la liste)",
+        shortcut: None,
+        legacy_shortcut: None,
+    },
+    CommandSpec {
+        id: CommandId::Delete,
+        name: "delete",
+        aliases: &["effacer"],
+        arg: Arg::None,
+        description: "Supprimer la conversation (Suppr dans la liste)",
         shortcut: None,
         legacy_shortcut: None,
     },
@@ -388,7 +408,10 @@ mod tests {
 
     #[test]
     fn palette_search_includes_descriptions() {
-        assert_eq!(names(&search("conversation")), vec!["new", "history"]);
+        assert_eq!(
+            names(&search("conversation")),
+            vec!["new", "history", "rename", "delete"]
+        );
         assert_eq!(
             names(&search("contexte")),
             vec!["context", "add", "clear", "compact"]

@@ -1,0 +1,18 @@
+---
+source: src/ui/mod.rs
+expression: "draw(&mut app, 90, 14).backend()"
+---
+"╭ Conversations ─────────────╮                                                            "
+"│⌕ caramel▍                  │                                                            "
+"│                            │                                                            "
+"│  Recette de la tarte tatin │                          chatatui                          "
+"│  il y a 3 h · qwen2.5:7b   │                 modèle : Ollama › llama3.2                 "
+"│  « …faire un caramel à sec…│                                                            "
+"│▌ Caramel beurre salé       │        Écrivez un message ci-dessous pour commencer.       "
+"│  Suppr pour confirmer      │Tapez / pour les commandes, Ctrl+P pour la palette, F1 pour "
+"│                            │                                                            "
+"│                            │                                                            "
+"│                            │╭ Message ─────────────────────────────────────────────────╮"
+"│                            ││ Écrivez votre message…                                   │"
+"╰─── Ctrl+R renommer · Suppr ╯╰──────────────────────────────────────────────────────────╯"
+" ● Suppr à nouveau pour supprimer « Caramel beurre salé » (définitif) │ Ollama › llama3.2 "

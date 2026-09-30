@@ -157,8 +157,15 @@ fn hint_candidates(app: &App) -> Vec<String> {
         }
         None => {}
     }
-    if app.sidebar.is_some() {
+    if let Some(sidebar) = &app.sidebar {
+        if sidebar.rename.is_some() {
+            return vec![
+                "Entrée enregistrer · Échap annuler ".into(),
+                "Entrée · Échap ".into(),
+            ];
+        }
         return vec![
+            "↑↓ choisir · Entrée ouvrir · tapez pour chercher · Échap fermer ".into(),
             "↑↓ choisir · Entrée ouvrir · Échap fermer ".into(),
             "Entrée ouvrir · Échap fermer ".into(),
         ];

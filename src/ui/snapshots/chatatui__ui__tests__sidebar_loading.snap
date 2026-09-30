@@ -3,10 +3,10 @@ source: src/ui/mod.rs
 expression: "draw(&mut app, 90, 8).backend()"
 ---
 "╭ Conversations ─────────────╮                          chatatui                          "
-"│Chargement…                 │                 modèle : Ollama › llama3.2                 "
+"│⌕ tapez pour chercher       │                 modèle : Ollama › llama3.2                 "
 "│                            │                                                            "
-"│                            │        Écrivez un message ci-dessous pour commencer.       "
+"│Chargement…                 │        Écrivez un message ci-dessous pour commencer.       "
 "│                            │╭ Message ─────────────────────────────────────────────────╮"
 "│                            ││ Écrivez votre message…                                   │"
-"╰─────────── Ctrl+N nouvelle ╯╰──────────────────────────────────────────────────────────╯"
+"╰─── Ctrl+R renommer · Suppr ╯╰──────────────────────────────────────────────────────────╯"
 " ● Prêt │ Ollama › llama3.2                     ↑↓ choisir · Entrée ouvrir · Échap fermer "

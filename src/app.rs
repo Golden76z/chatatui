@@ -230,6 +230,13 @@ pub struct IndexProgress {
     pub current: String,
 }
 
+/// A deletion waiting for confirmation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Confirm {
+    Forget(String),
+    DeleteConversation(ConversationId),
+}
+
 /// Passages given to the model for the last reply.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Retrieved {
@@ -300,8 +307,8 @@ pub struct App {
     pub stale: Vec<Staleness>,
     /// `true` once the collections were checked (the first check is announced).
     collections_checked: bool,
-    /// Collection `/forget` asked to delete, waiting for the command to be confirmed.
-    pending_forget: Option<String>,
+    /// Deletion waiting for its command to be run again (`/forget`, `/delete`).
+    pending_confirm: Option<Confirm>,
     /// Token counts of the last completed request of this conversation.
     pub measured: Option<Measured>,
     /// Token counts received for the running request.
@@ -361,7 +368,7 @@ impl App {
             retrieved: None,
             stale: Vec::new(),
             collections_checked: false,
-            pending_forget: None,
+            pending_confirm: None,
             request_usage: Usage::default(),
             session_seed: 0,
             next_conversation: 0,
@@ -564,9 +571,21 @@ impl App {
             }
             // Esc closes the topmost popup or panel first.
             Action::Cancel => {
-                self.pending_forget = None;
-                if self.overlay.take().is_some() || self.sidebar.take().is_some() {
+                self.pending_confirm = None;
+                if self.overlay.take().is_some() {
                     Vec::new()
+                } else if let Some(sidebar) = &mut self.sidebar {
+                    // Esc undoes the panel's current step before closing it.
+                    if sidebar.rename.take().is_some() {
+                        self.status = Status::Ready;
+                        Vec::new()
+                    } else if !sidebar.filter.is_empty() {
+                        sidebar.filter.clear();
+                        vec![Effect::Store(StoreRequest::List)]
+                    } else {
+                        self.sidebar = None;
+                        Vec::new()
+                    }
                 } else if self.is_generating() {
                     self.cancel_generation()
                 } else if self.indexing.is_some() {
@@ -740,7 +759,26 @@ impl App {
                 }
                 Vec::new()
             }
-            Action::SidebarOpen => self.open_selected(),
+            Action::SidebarOpen => match self.sidebar.as_ref().and_then(|s| s.rename.clone()) {
+                Some(title) => self.finish_rename(&title),
+                None => self.open_selected(),
+            },
+            Action::SidebarType(c) => self.sidebar_edit(|text| text.push(c)),
+            Action::SidebarBackspace => self.sidebar_edit(|text| {
+                text.pop();
+            }),
+            Action::SidebarRename => {
+                if let Some(sidebar) = &mut self.sidebar
+                    && let Some(title) = sidebar.selected_item().map(|i| i.title.clone())
+                {
+                    sidebar.confirm_delete = None;
+                    sidebar.rename = Some(title);
+                    self.status =
+                        Status::Info("nouveau titre, puis Entrée (Échap pour annuler)".into());
+                }
+                Vec::new()
+            }
+            Action::SidebarDelete => self.sidebar_delete(),
             Action::Edit(key) => {
                 if self.input.input(key) {
                     self.input_changed();
@@ -843,9 +881,9 @@ impl App {
 
     /// Executes a user command.
     pub fn run_command(&mut self, id: CommandId, arg: &str) -> Vec<Effect> {
-        // A `/forget` is confirmed only by running it again right away.
-        if id != CommandId::Forget {
-            self.pending_forget = None;
+        // A deletion is confirmed only by running the command again right away.
+        if !matches!(id, CommandId::Forget | CommandId::Delete) {
+            self.pending_confirm = None;
         }
         match id {
             CommandId::New => self.new_conversation(),
@@ -880,6 +918,8 @@ impl App {
             CommandId::Index => self.start_index(arg),
             CommandId::Rag => self.choose_rag(arg.trim()),
             CommandId::Forget => self.forget(arg.trim()),
+            CommandId::Rename => self.rename_current(arg.trim()),
+            CommandId::Delete => self.delete_current(),
             CommandId::Collections => {
                 self.overlay = Some(Overlay::Collections { scroll: 0 });
                 let mut effects = self.refresh_collections();
@@ -981,7 +1021,7 @@ impl App {
 
     /// Sends `text` as a user message and starts the reply.
     fn send_message(&mut self, text: &str) -> Vec<Effect> {
-        self.pending_forget = None;
+        self.pending_confirm = None;
         if self.is_generating() {
             return Vec::new();
         }
@@ -1228,16 +1268,137 @@ impl App {
             ));
             return Vec::new();
         }
-        if self.pending_forget.as_deref() == Some(name) {
-            self.pending_forget = None;
+        let confirm = Confirm::Forget(name.to_owned());
+        if self.pending_confirm.as_ref() == Some(&confirm) {
+            self.pending_confirm = None;
             return vec![Effect::Store(StoreRequest::DeleteCollection(
                 name.to_owned(),
             ))];
         }
-        self.pending_forget = Some(name.to_owned());
+        self.pending_confirm = Some(confirm);
         self.set_input(&format!("/forget {name}"));
         self.status = Status::Info(format!(
             "Entrée pour confirmer : l'index de « {name} » sera supprimé (pas vos fichiers)"
+        ));
+        Vec::new()
+    }
+
+    /// Types into the panel: the new title when renaming, otherwise the search.
+    fn sidebar_edit(&mut self, edit: impl FnOnce(&mut String)) -> Vec<Effect> {
+        let Some(sidebar) = &mut self.sidebar else {
+            return Vec::new();
+        };
+        sidebar.confirm_delete = None;
+        if let Some(title) = &mut sidebar.rename {
+            edit(title);
+            return Vec::new();
+        }
+        edit(&mut sidebar.filter);
+        self.refresh_list()
+    }
+
+    /// Asks for the conversation list, searched with the panel's filter.
+    fn refresh_list(&self) -> Vec<Effect> {
+        match &self.sidebar {
+            Some(sidebar) if !sidebar.filter.trim().is_empty() => {
+                vec![Effect::Store(StoreRequest::Search(sidebar.filter.clone()))]
+            }
+            Some(_) => vec![Effect::Store(StoreRequest::List)],
+            None => Vec::new(),
+        }
+    }
+
+    /// Saves the title typed in the panel for the highlighted conversation.
+    fn finish_rename(&mut self, title: &str) -> Vec<Effect> {
+        let Some(sidebar) = &mut self.sidebar else {
+            return Vec::new();
+        };
+        sidebar.rename = None;
+        let title = title.trim();
+        let Some(id) = sidebar.selected_item().map(|i| i.id.clone()) else {
+            return Vec::new();
+        };
+        if title.is_empty() {
+            self.status = Status::Error("titre vide : conversation non renommée".into());
+            return Vec::new();
+        }
+        sidebar.retitle(&id, title);
+        if self.conversation_id.as_ref() == Some(&id) {
+            self.conversation_title = Some(title.to_owned());
+        }
+        self.status = Status::Info(format!("renommée : {title}"));
+        vec![Effect::Store(StoreRequest::Rename {
+            id,
+            title: title.to_owned(),
+        })]
+    }
+
+    /// `Suppr` in the panel: asks to press it again, then deletes.
+    fn sidebar_delete(&mut self) -> Vec<Effect> {
+        let Some(sidebar) = &mut self.sidebar else {
+            return Vec::new();
+        };
+        if sidebar.rename.is_some() {
+            return Vec::new();
+        }
+        let Some(item) = sidebar.selected_item().cloned() else {
+            return Vec::new();
+        };
+        if sidebar.confirm_delete.as_ref() == Some(&item.id) {
+            sidebar.confirm_delete = None;
+            if self.conversation_id.as_ref() == Some(&item.id) {
+                // Nothing may be saved into it any more.
+                self.generation.take();
+            }
+            return vec![Effect::Store(StoreRequest::DeleteConversation(item.id))];
+        }
+        sidebar.confirm_delete = Some(item.id);
+        self.status = Status::Info(format!(
+            "Suppr à nouveau pour supprimer « {} » (définitif)",
+            item.title
+        ));
+        Vec::new()
+    }
+
+    /// `/rename <title>`: renames the current conversation.
+    fn rename_current(&mut self, title: &str) -> Vec<Effect> {
+        if title.is_empty() {
+            self.status = Status::Error("usage : /rename <titre>".into());
+            return Vec::new();
+        }
+        self.conversation_title = Some(title.to_owned());
+        self.status = Status::Info(format!("renommée : {title}"));
+        match &self.conversation_id {
+            Some(id) => vec![Effect::Store(StoreRequest::Rename {
+                id: id.clone(),
+                title: title.to_owned(),
+            })],
+            // Used as the title when the conversation is first saved.
+            None => Vec::new(),
+        }
+    }
+
+    /// `/delete`: deletes the current conversation, once confirmed by running it again.
+    fn delete_current(&mut self) -> Vec<Effect> {
+        let Some(id) = self.conversation_id.clone() else {
+            self.status =
+                Status::Info("conversation pas encore enregistrée : rien à supprimer".into());
+            return Vec::new();
+        };
+        let confirm = Confirm::DeleteConversation(id.clone());
+        if self.pending_confirm.as_ref() == Some(&confirm) {
+            self.pending_confirm = None;
+            let mut effects = self.cancel_generation();
+            effects.push(Effect::Store(StoreRequest::DeleteConversation(id)));
+            return effects;
+        }
+        self.pending_confirm = Some(confirm);
+        self.set_input("/delete");
+        self.status = Status::Info(format!(
+            "Entrée pour confirmer : « {} » sera supprimée définitivement",
+            self.conversation_title
+                .as_deref()
+                .unwrap_or("cette conversation")
         ));
         Vec::new()
     }
@@ -1512,12 +1673,40 @@ impl App {
     fn on_storage_event(&mut self, event: StoreEvent) -> Vec<Effect> {
         match event {
             StoreEvent::Listed { conversations, now } => {
-                if let Some(sidebar) = &mut self.sidebar {
+                // While searching, only the search results are shown.
+                if let Some(sidebar) = &mut self.sidebar
+                    && sidebar.filter.trim().is_empty()
+                {
                     sidebar.set_items(conversations, now, self.conversation_id.as_ref());
                 }
                 Vec::new()
             }
             StoreEvent::Loaded(stored) => self.load(stored),
+            StoreEvent::Searched {
+                query,
+                results,
+                now,
+            } => {
+                if let Some(sidebar) = &mut self.sidebar
+                    && sidebar.filter == query
+                {
+                    sidebar.set_results(results, now, self.conversation_id.as_ref());
+                }
+                Vec::new()
+            }
+            StoreEvent::ConversationDeleted(id) => {
+                self.status = Status::Info("conversation supprimée".into());
+                let mut effects = Vec::new();
+                if self.conversation_id.as_ref() == Some(&id) {
+                    // The panel stays open on the refreshed list.
+                    let sidebar = self.sidebar.take();
+                    effects.extend(self.new_conversation());
+                    self.sidebar = sidebar;
+                    self.status = Status::Info("conversation supprimée".into());
+                }
+                effects.extend(self.refresh_list());
+                effects
+            }
             StoreEvent::CollectionDeleted { name, found } => {
                 if !found {
                     self.status = Status::Error(format!("collection « {name} » introuvable"));
@@ -3152,5 +3341,140 @@ mod tests {
             ..IndexReport::default()
         })));
         assert_eq!(app.stale.len(), 1, "re-indexed");
+    }
+
+    fn open_list(app: &mut App, titles: &[&str]) {
+        app.update(Action::ToggleSidebar);
+        app.update(Action::Storage(StoreEvent::Listed {
+            conversations: titles
+                .iter()
+                .map(|t| crate::storage::ConversationSummary {
+                    id: ConversationId((*t).into()),
+                    title: (*t).into(),
+                    provider: "ollama".into(),
+                    model: "m".into(),
+                    updated_at: 0,
+                })
+                .collect(),
+            now: 0,
+        }));
+    }
+
+    #[test]
+    fn typing_in_the_list_searches_and_esc_clears_then_closes() {
+        let mut app = app();
+        open_list(&mut app, &["a", "b"]);
+        assert_eq!(
+            app.update(Action::SidebarType('r')),
+            vec![Effect::Store(StoreRequest::Search("r".into()))]
+        );
+        app.update(Action::SidebarType('u'));
+        // A stale answer (for "r") is ignored, the current one is shown.
+        let hit = |id: &str| {
+            (
+                crate::storage::ConversationSummary {
+                    id: ConversationId(id.into()),
+                    title: id.into(),
+                    provider: "ollama".into(),
+                    model: "m".into(),
+                    updated_at: 0,
+                },
+                Some("… du rust …".to_owned()),
+            )
+        };
+        app.update(Action::Storage(StoreEvent::Searched {
+            query: "r".into(),
+            results: vec![hit("a"), hit("b")],
+            now: 0,
+        }));
+        app.update(Action::Storage(StoreEvent::Searched {
+            query: "ru".into(),
+            results: vec![hit("b")],
+            now: 0,
+        }));
+        let sidebar = app.sidebar.as_ref().expect("open");
+        assert_eq!(sidebar.items.as_ref().map(Vec::len), Some(1));
+        assert_eq!(sidebar.snippet(0), Some("… du rust …"));
+
+        assert_eq!(
+            app.update(Action::Cancel),
+            vec![Effect::Store(StoreRequest::List)],
+            "Esc clears the search first"
+        );
+        assert!(app.sidebar.is_some());
+        app.update(Action::Cancel);
+        assert!(app.sidebar.is_none());
+    }
+
+    #[test]
+    fn renaming_and_deleting_from_the_list() {
+        let mut app = app();
+        send(&mut app, "Question");
+        let current = app.conversation_id.clone().expect("stored");
+        open_list(&mut app, &["x"]);
+        // Make the current conversation the listed one.
+        if let Some(sidebar) = &mut app.sidebar {
+            sidebar.items = Some(vec![crate::storage::ConversationSummary {
+                id: current.clone(),
+                title: "Question".into(),
+                provider: "ollama".into(),
+                model: "m".into(),
+                updated_at: 0,
+            }]);
+        }
+        app.update(Action::SidebarRename);
+        app.update(Action::SidebarBackspace);
+        for c in "ns du jour".chars() {
+            app.update(Action::SidebarType(c));
+        }
+        assert_eq!(
+            app.update(Action::SidebarOpen),
+            vec![Effect::Store(StoreRequest::Rename {
+                id: current.clone(),
+                title: "Questions du jour".into()
+            })]
+        );
+        assert_eq!(app.conversation_title.as_deref(), Some("Questions du jour"));
+
+        assert!(app.update(Action::SidebarDelete).is_empty(), "asks first");
+        app.update(Action::SidebarDown);
+        assert!(
+            app.update(Action::SidebarDelete).is_empty(),
+            "moving resets it"
+        );
+        assert_eq!(
+            app.update(Action::SidebarDelete),
+            vec![Effect::Store(StoreRequest::DeleteConversation(
+                current.clone()
+            ))]
+        );
+        let effects = app.update(Action::Storage(StoreEvent::ConversationDeleted(current)));
+        assert!(effects.contains(&Effect::Store(StoreRequest::List)));
+        assert!(
+            app.conversation.is_empty(),
+            "the deleted conversation is closed"
+        );
+        assert!(app.conversation_id.is_none());
+        assert!(app.sidebar.is_some(), "the list stays open");
+    }
+
+    #[test]
+    fn rename_and_delete_commands() {
+        let mut app = app();
+        assert!(
+            app.run_command(CommandId::Rename, "Brouillon").is_empty(),
+            "not stored yet"
+        );
+        assert_eq!(app.conversation_title.as_deref(), Some("Brouillon"));
+        let job = send(&mut app, "Question");
+        assert_eq!(app.conversation_title.as_deref(), Some("Brouillon"), "kept");
+        llm(&mut app, job.request_id, LlmEvent::Done);
+        let id = app.conversation_id.clone().expect("stored");
+        assert!(app.run_command(CommandId::Delete, "").is_empty());
+        assert_eq!(app.input_text(), "/delete");
+        assert_eq!(
+            app.update(Action::Submit),
+            vec![Effect::Store(StoreRequest::DeleteConversation(id))]
+        );
     }
 }

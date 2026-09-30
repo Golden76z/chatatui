@@ -16,7 +16,28 @@ pub fn render(app: &App, sidebar: &Sidebar, frame: &mut Frame, area: Rect) {
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(Color::Cyan))
         .title(" Conversations ")
-        .title_bottom(Line::from(" Ctrl+N nouvelle ").right_aligned());
+        .title_bottom(Line::from(" Ctrl+R renommer · Suppr ").right_aligned());
+
+    // The search line, then the list.
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let [search_area, list_area] = ratatui::layout::Layout::vertical([
+        ratatui::layout::Constraint::Length(2),
+        ratatui::layout::Constraint::Fill(1),
+    ])
+    .areas(inner);
+    let search = if sidebar.filter.is_empty() {
+        Line::styled("⌕ tapez pour chercher", dim())
+    } else {
+        Line::from(vec![
+            Span::styled("⌕ ", Style::default().fg(Color::Cyan)),
+            Span::raw(sidebar.filter.clone()),
+            Span::styled("▍", dim()),
+        ])
+    };
+    frame.render_widget(Paragraph::new(search), search_area);
+    let area = list_area;
+    let block = Block::default();
 
     let Some(items) = &sidebar.items else {
         let loading = Paragraph::new("Chargement…").style(dim()).block(block);
@@ -24,7 +45,12 @@ pub fn render(app: &App, sidebar: &Sidebar, frame: &mut Frame, area: Rect) {
         return;
     };
     if items.is_empty() {
-        let empty = Paragraph::new("Aucune conversation enregistrée.")
+        let message = if sidebar.filter.trim().is_empty() {
+            "Aucune conversation enregistrée."
+        } else {
+            "Aucune conversation ne correspond."
+        };
+        let empty = Paragraph::new(message)
             .style(dim())
             .wrap(ratatui::widgets::Wrap { trim: true })
             .block(block);
@@ -32,13 +58,32 @@ pub fn render(app: &App, sidebar: &Sidebar, frame: &mut Frame, area: Rect) {
         return;
     }
 
-    let width = usize::from(area.width.saturating_sub(4)); // borders + highlight symbol
+    let width = usize::from(area.width.saturating_sub(2)); // highlight symbol
     let list_items: Vec<ListItem> = items
         .iter()
-        .map(|item| {
+        .enumerate()
+        .map(|(index, item)| {
             let current = Some(&item.id) == app.conversation_id.as_ref();
             let marker = if current { "● " } else { "" };
-            let title = truncate(&format!("{marker}{}", item.title), width);
+            let renaming = sidebar
+                .rename
+                .as_ref()
+                .filter(|_| index == sidebar.selected);
+            let title_line = match renaming {
+                Some(title) => Line::from(vec![
+                    Span::styled("✎ ", Style::default().fg(Color::Yellow)),
+                    Span::styled(
+                        truncate_start(title, width.saturating_sub(3)),
+                        Style::default().add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled("▍", Style::default().fg(Color::Yellow)),
+                ]),
+                None => Line::from(Span::styled(
+                    truncate(&format!("{marker}{}", item.title), width),
+                    Style::default().add_modifier(Modifier::BOLD),
+                )),
+            };
+            let deleting = sidebar.confirm_delete.as_ref() == Some(&item.id);
             let details = truncate(
                 &format!(
                     "{} · {}{}",
@@ -57,13 +102,23 @@ pub fn render(app: &App, sidebar: &Sidebar, frame: &mut Frame, area: Rect) {
                 ),
                 width,
             );
-            ListItem::new(vec![
-                Line::from(Span::styled(
-                    title,
-                    Style::default().add_modifier(Modifier::BOLD),
-                )),
-                Line::from(Span::styled(details, dim())),
-            ])
+            let mut lines = vec![title_line];
+            if deleting {
+                lines.push(Line::styled(
+                    truncate("Suppr pour confirmer", width),
+                    Style::default().fg(Color::Red),
+                ));
+            } else {
+                lines.push(Line::from(Span::styled(details, dim())));
+            }
+            if let Some(snippet) = sidebar.snippet(index) {
+                let flat: String = snippet.split_whitespace().collect::<Vec<_>>().join(" ");
+                lines.push(Line::styled(
+                    truncate(&format!("« {flat} »"), width),
+                    Style::default().fg(Color::Blue),
+                ));
+            }
+            ListItem::new(lines)
         })
         .collect();
 
@@ -78,6 +133,24 @@ pub fn render(app: &App, sidebar: &Sidebar, frame: &mut Frame, area: Rect) {
 
 fn dim() -> Style {
     Style::default().fg(Color::DarkGray)
+}
+
+/// Keeps the end of `text` within `width` columns (for text being typed).
+fn truncate_start(text: &str, width: usize) -> String {
+    if display_width(text) <= width {
+        return text.to_owned();
+    }
+    let mut kept: Vec<char> = Vec::new();
+    let mut used = 1; // the ellipsis
+    for c in text.chars().rev() {
+        let w = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+        if used + w > width {
+            break;
+        }
+        kept.push(c);
+        used += w;
+    }
+    std::iter::once('…').chain(kept.into_iter().rev()).collect()
 }
 
 /// Cuts `text` to `width` columns, with an ellipsis when shortened.

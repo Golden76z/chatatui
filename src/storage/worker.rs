@@ -78,6 +78,7 @@ fn run(location: Location, requests: &mpsc::Receiver<StoreRequest>, report: &dyn
                         | StoreRequest::SetModel { .. }
                         | StoreRequest::SetContextStart { .. }
                         | StoreRequest::SetRag { .. }
+                        | StoreRequest::Rename { .. }
                 ) {
                     report(StoreEvent::Error(message.clone()));
                 }

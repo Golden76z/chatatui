@@ -82,6 +82,12 @@ pub enum StoreRequest {
     },
     /// List conversations, most recent first.
     List,
+    /// Conversations whose title or messages contain every word of the query.
+    Search(String),
+    /// Change a conversation's title.
+    Rename { id: ConversationId, title: String },
+    /// Delete a conversation and its messages.
+    DeleteConversation(ConversationId),
     /// Load one conversation.
     Load(ConversationId),
     /// List document collections (RAG).
@@ -99,6 +105,15 @@ pub enum StoreEvent {
         now: i64,
     },
     Loaded(StoredConversation),
+    /// Result of [`StoreRequest::Search`]: each conversation with an excerpt of a matching
+    /// message (`None` when only the title matches).
+    Searched {
+        query: String,
+        results: Vec<(ConversationSummary, Option<String>)>,
+        now: i64,
+    },
+    /// A conversation was deleted.
+    ConversationDeleted(ConversationId),
     /// Result of [`StoreRequest::DeleteCollection`]: `found` is `false` if there was none.
     CollectionDeleted {
         name: String,
@@ -138,9 +153,10 @@ impl Store {
             let _ = std::fs::create_dir_all(parent);
         }
         let conn = Connection::open(path)?;
-        // Several chatatui instances may share the file.
-        conn.pragma_update(None, "journal_mode", "WAL")?;
+        // Several connections (and chatatui instances) share the file: wait for locks,
+        // including the one taken to switch to WAL.
         conn.busy_timeout(Duration::from_secs(5))?;
+        enable_wal(&conn)?;
         Self::init(conn)
     }
 
@@ -190,6 +206,17 @@ impl Store {
                 })
             }),
             StoreRequest::Load(id) => self.load(&id).map(|c| Some(StoreEvent::Loaded(c))),
+            StoreRequest::Search(query) => self.search(&query).map(|results| {
+                Some(StoreEvent::Searched {
+                    query,
+                    results,
+                    now: now(),
+                })
+            }),
+            StoreRequest::Rename { id, title } => self.rename(&id, &title).map(|()| None),
+            StoreRequest::DeleteConversation(id) => self
+                .delete(&id)
+                .map(|()| Some(StoreEvent::ConversationDeleted(id))),
             StoreRequest::DeleteCollection(name) => {
                 crate::rag::store::delete_collection(&mut self.conn, &name)
                     .map(|found| Some(StoreEvent::CollectionDeleted { name, found }))
@@ -301,6 +328,61 @@ impl Store {
         Ok(())
     }
 
+    /// Conversations matching every word of `query` in their title or messages (accents
+    /// and case ignored), most recently updated first.
+    pub fn search(
+        &self,
+        query: &str,
+    ) -> Result<Vec<(ConversationSummary, Option<String>)>, StoreError> {
+        let Some(fts) = match_all_words(query) else {
+            return Ok(self.list()?.into_iter().map(|c| (c, None)).collect());
+        };
+        let like = format!("%{}%", query.trim().replace(['%', '_'], ""));
+        let mut statement = self.conn.prepare(
+            "SELECT c.id, c.title, c.provider, c.model, c.updated_at,
+                    (SELECT snippet(messages_fts, 0, '', '', '…', 10)
+                       FROM messages_fts JOIN messages m ON m.rowid = messages_fts.rowid
+                      WHERE messages_fts MATCH ?1 AND m.conversation_id = c.id
+                      LIMIT 1)
+             FROM conversations c
+             WHERE c.title LIKE ?2
+                OR c.id IN (SELECT m.conversation_id
+                              FROM messages_fts JOIN messages m ON m.rowid = messages_fts.rowid
+                             WHERE messages_fts MATCH ?1)
+             ORDER BY c.updated_at DESC, c.rowid DESC
+             LIMIT 200",
+        )?;
+        let rows = statement.query_map(params![fts, like], |row| {
+            Ok((
+                ConversationSummary {
+                    id: ConversationId(row.get(0)?),
+                    title: row.get(1)?,
+                    provider: row.get(2)?,
+                    model: row.get(3)?,
+                    updated_at: row.get(4)?,
+                },
+                row.get::<_, Option<String>>(5)?,
+            ))
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Changes a conversation's title (no-op if it does not exist).
+    pub fn rename(&mut self, id: &ConversationId, title: &str) -> Result<(), StoreError> {
+        self.conn.execute(
+            "UPDATE conversations SET title = ?2 WHERE id = ?1",
+            params![id.0, title],
+        )?;
+        Ok(())
+    }
+
+    /// Deletes a conversation and its messages.
+    pub fn delete(&mut self, id: &ConversationId) -> Result<(), StoreError> {
+        self.conn
+            .execute("DELETE FROM conversations WHERE id = ?1", [&id.0])?;
+        Ok(())
+    }
+
     /// All conversations, most recently updated first.
     pub fn list(&self) -> Result<Vec<ConversationSummary>, StoreError> {
         let mut statement = self.conn.prepare(
@@ -377,6 +459,44 @@ impl Store {
             context_start: u64::try_from(context_start).unwrap_or(0),
             rag_collection,
         })
+    }
+}
+
+/// FTS5 query requiring every word of `text` (as a prefix). `None` without any word.
+fn match_all_words(text: &str) -> Option<String> {
+    let words: Vec<String> = text
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(|w| format!("\"{}\"*", w.to_lowercase()))
+        .collect();
+    (!words.is_empty()).then(|| words.join(" "))
+}
+
+/// Switches the file to WAL mode (kept by the file once set). SQLite reports a busy
+/// database for this switch without waiting, when another connection is using the file:
+/// retry for a moment.
+fn enable_wal(conn: &Connection) -> Result<(), StoreError> {
+    const ATTEMPTS: u32 = 100;
+    let mut attempt = 0;
+    loop {
+        let result = conn
+            .query_row("PRAGMA journal_mode", [], |r| r.get::<_, String>(0))
+            .and_then(|mode| {
+                if mode.eq_ignore_ascii_case("wal") {
+                    Ok(())
+                } else {
+                    conn.pragma_update(None, "journal_mode", "WAL")
+                }
+            });
+        match result {
+            Err(rusqlite::Error::SqliteFailure(e, _))
+                if e.code == rusqlite::ErrorCode::DatabaseBusy && attempt < ATTEMPTS =>
+            {
+                attempt += 1;
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            other => return Ok(other?),
+        }
     }
 }
 
@@ -681,5 +801,87 @@ mod tests {
 
         store.set_rag(&conv.id, None).expect("set");
         assert_eq!(store.load(&conv.id).expect("load").rag_collection, None);
+    }
+
+    #[test]
+    fn search_finds_words_in_messages_and_titles() {
+        let mut store = store();
+        let save = |store: &mut Store, conv: &str, title: &str, seq: u64, text: &str, at: i64| {
+            store
+                .save_message_at(
+                    &record(conv, title),
+                    &message(seq, Role::User, text, MessageStatus::Complete),
+                    at,
+                )
+                .expect("save");
+        };
+        save(
+            &mut store,
+            "a",
+            "Emprunts",
+            0,
+            "Comment fonctionne le système d'emprunt ?",
+            1,
+        );
+        save(
+            &mut store,
+            "b",
+            "Traits",
+            0,
+            "Qu'est-ce qu'un trait générique ?",
+            2,
+        );
+        save(&mut store, "c", "Vacances", 0, "Idées de départ", 3);
+        let ids = |results: Vec<(ConversationSummary, Option<String>)>| -> Vec<String> {
+            results.into_iter().map(|(c, _)| c.id.0).collect()
+        };
+
+        assert_eq!(
+            ids(store.search("generique").expect("search")),
+            vec!["b"],
+            "accents"
+        );
+        assert_eq!(
+            ids(store.search("EMPRUNT systeme").expect("search")),
+            vec!["a"]
+        );
+        assert!(
+            store.search("emprunt trait").expect("search").is_empty(),
+            "all words"
+        );
+        let hits = store.search("vacances").expect("search");
+        assert_eq!(hits[0].1, None, "title only: no excerpt");
+        let hits = store.search("fonctionne").expect("search");
+        assert!(
+            hits[0]
+                .1
+                .as_deref()
+                .is_some_and(|s| s.contains("fonctionne"))
+        );
+        assert_eq!(
+            store.search("  ").expect("all").len(),
+            3,
+            "empty query lists all"
+        );
+
+        // Edited messages are searchable under their new text only.
+        save(&mut store, "c", "Vacances", 0, "Planning des examens", 4);
+        assert!(store.search("depart").expect("search").is_empty());
+        assert_eq!(ids(store.search("examens").expect("search")), vec!["c"]);
+
+        store
+            .rename(&ConversationId("c".into()), "Examens de juin")
+            .expect("rename");
+        assert_eq!(
+            store
+                .load(&ConversationId("c".into()))
+                .expect("load")
+                .summary
+                .title,
+            "Examens de juin"
+        );
+        store.delete(&ConversationId("c".into())).expect("delete");
+        assert!(store.search("examens").expect("search").is_empty());
+        assert_eq!(store.list().expect("list").len(), 2);
     }
 }

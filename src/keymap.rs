@@ -80,7 +80,12 @@ pub fn map_key(key: KeyEvent, context: KeyContext) -> Option<Action> {
             KeyCode::Esc => Some(Action::Cancel),
             KeyCode::PageUp => Some(Action::PageUp),
             KeyCode::PageDown => Some(Action::PageDown),
-            _ => None, // the input does not have the focus
+            KeyCode::Backspace => Some(Action::SidebarBackspace),
+            KeyCode::Delete => Some(Action::SidebarDelete),
+            KeyCode::Char('r') if ctrl => Some(Action::SidebarRename),
+            // Typing searches (or edits the new title): the input does not have the focus.
+            KeyCode::Char(c) if !ctrl && !alt => Some(Action::SidebarType(c)),
+            _ => None,
         };
     }
     if context.suggestions_open {
@@ -158,7 +163,17 @@ mod tests {
         assert_eq!(map(KeyCode::Down), Some(Action::SidebarDown));
         assert_eq!(map(KeyCode::Enter), Some(Action::SidebarOpen));
         assert_eq!(map(KeyCode::Esc), Some(Action::Cancel));
-        assert_eq!(map(KeyCode::Char('x')), None, "typing is ignored");
+        assert_eq!(
+            map(KeyCode::Char('x')),
+            Some(Action::SidebarType('x')),
+            "typing searches"
+        );
+        assert_eq!(map(KeyCode::Backspace), Some(Action::SidebarBackspace));
+        assert_eq!(map(KeyCode::Delete), Some(Action::SidebarDelete));
+        assert_eq!(
+            super::map_key(key(KeyCode::Char('r'), KeyModifiers::CONTROL), context),
+            Some(Action::SidebarRename)
+        );
         assert_eq!(
             super::map_key(key(KeyCode::Char('l'), KeyModifiers::CONTROL), context),
             Some(Action::ToggleSidebar)

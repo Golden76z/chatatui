@@ -12,7 +12,8 @@ Claude is reached through the native Anthropic Messages API.
 - Markdown rendering: headings, bold/italic, lists, quotes, tables, syntax-highlighted
   code blocks
 - Scrollable conversation with auto-scroll that pauses when you scroll up
-- History in SQLite: new conversation, list of past conversations, reopen any of them
+- History in SQLite: new conversation, list of past conversations, reopen, rename or
+  delete any of them, and full-text search across all messages
 - Several providers at once: the model picker lists the models of all of them, and each
   conversation remembers its provider and model
 - Context tools: attach files (`/add`), empty (`/clear`) or summarize (`/compact`) the
@@ -153,6 +154,8 @@ run), or press `Ctrl+P` for the palette:
 |---|---|
 | `/new` | New conversation (`Ctrl+N`) |
 | `/history` | Conversation list (`Ctrl+L`) |
+| `/rename <title>` | Rename the conversation |
+| `/delete` | Delete the conversation (run twice to confirm) |
 | `/model [provider] [model]` | Choose the model (`Ctrl+M` / `F2`), or switch directly: `/model qwen2.5:7b`, `/model claude`, `/model claude <model>` |
 | `/context` | Context window, tokens used (measured or estimated) and where they go |
 | `/prompt` | The exact messages the next request will send |
@@ -176,7 +179,7 @@ Start a message with `//` to send text that begins with a slash.
 | `Shift+Enter` / `Alt+Enter` / `Ctrl+J` | New line (`Shift+Enter` needs the kitty keyboard protocol) |
 | `Esc` | Close the popup or panel, otherwise cancel the running generation, otherwise stop indexing |
 | `Ctrl+N` | New conversation |
-| `Ctrl+L` | Conversation list (`↑`/`↓` to choose, `Enter` to open) |
+| `Ctrl+L` | Conversation list: `↑`/`↓` to choose, `Enter` to open, type to search every message (accents and case ignored), `Ctrl+R` to rename, `Suppr` twice to delete, `Esc` clears the search then closes |
 | `Ctrl+M` / `F2` | Choose the model (type to filter). `Ctrl+M` needs the kitty keyboard protocol |
 | `Ctrl+P` | Command palette |
 | `F1` | Help |

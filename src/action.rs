@@ -30,8 +30,16 @@ pub enum Action {
     SidebarUp,
     /// Highlight the next conversation in the list.
     SidebarDown,
-    /// Open the highlighted conversation.
+    /// Open the highlighted conversation (or save the title being typed).
     SidebarOpen,
+    /// A character typed in the conversation list: search, or the new title.
+    SidebarType(char),
+    /// Backspace in the conversation list.
+    SidebarBackspace,
+    /// Start renaming the highlighted conversation.
+    SidebarRename,
+    /// Delete the highlighted conversation (asks once for confirmation).
+    SidebarDelete,
     /// Open the model selection popup.
     OpenModelPicker,
     /// Open the command palette.

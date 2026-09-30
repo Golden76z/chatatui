@@ -478,4 +478,30 @@ mod tests {
         });
         insta::assert_snapshot!(draw(&mut app, 70, 14).backend());
     }
+
+    #[test]
+    fn sidebar_search_with_excerpt_and_delete_confirmation() {
+        let mut app = App::new(&Config::default(), false);
+        app.update(Action::ToggleSidebar);
+        for c in "caramel".chars() {
+            app.update(Action::SidebarType(c));
+        }
+        app.update(Action::Storage(StoreEvent::Searched {
+            query: "caramel".into(),
+            results: vec![
+                (
+                    summary("b", "Recette de la tarte tatin", "qwen2.5:7b", 3 * 3600),
+                    Some("…faire un caramel à sec, puis…".into()),
+                ),
+                (
+                    summary("c", "Caramel beurre salé", "llama3.2", 86_400),
+                    None,
+                ),
+            ],
+            now: 1_000_000,
+        }));
+        app.update(Action::SidebarDown);
+        app.update(Action::SidebarDelete);
+        insta::assert_snapshot!(draw(&mut app, 90, 14).backend());
+    }
 }

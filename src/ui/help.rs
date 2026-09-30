@@ -44,7 +44,7 @@ pub fn lines(app: &App) -> Vec<Line<'static>> {
     } else {
         "Alt+Entrée, Ctrl+J"
     };
-    let keys: [(&str, &str); 8] = [
+    let keys: [(&str, &str); 9] = [
         ("Entrée", "envoyer"),
         (newline, "nouvelle ligne"),
         ("Échap", "fermer / annuler la génération"),
@@ -53,6 +53,10 @@ pub fn lines(app: &App) -> Vec<Line<'static>> {
         ("Ctrl+Début Ctrl+Fin", "haut / bas de la conversation"),
         ("Ctrl+P", "palette de commandes"),
         ("↑ ↓ PgUp PgDn", "faire défiler une fenêtre comme celle-ci"),
+        (
+            "Liste (Ctrl+L)",
+            "tapez pour chercher · Ctrl+R renommer · Suppr supprimer",
+        ),
     ];
     lines.push(Line::default());
     lines.push(Line::styled(" Raccourcis", title));

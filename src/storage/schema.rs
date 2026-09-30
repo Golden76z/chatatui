@@ -93,6 +93,28 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE rag_collections ADD COLUMN types TEXT NOT NULL DEFAULT '';
     ALTER TABLE rag_documents ADD COLUMN skipped TEXT;
     "#,
+    // v7: full-text index of the messages, to search the history.
+    r#"
+    CREATE VIRTUAL TABLE messages_fts USING fts5(
+        content,
+        content = 'messages',
+        content_rowid = 'rowid',
+        tokenize = 'unicode61 remove_diacritics 2'
+    );
+    CREATE TRIGGER messages_fts_insert AFTER INSERT ON messages BEGIN
+        INSERT INTO messages_fts (rowid, content) VALUES (new.rowid, new.content);
+    END;
+    CREATE TRIGGER messages_fts_delete AFTER DELETE ON messages BEGIN
+        INSERT INTO messages_fts (messages_fts, rowid, content)
+        VALUES ('delete', old.rowid, old.content);
+    END;
+    CREATE TRIGGER messages_fts_update AFTER UPDATE OF content ON messages BEGIN
+        INSERT INTO messages_fts (messages_fts, rowid, content)
+        VALUES ('delete', old.rowid, old.content);
+        INSERT INTO messages_fts (rowid, content) VALUES (new.rowid, new.content);
+    END;
+    INSERT INTO messages_fts (messages_fts) VALUES ('rebuild');
+    "#,
 ];
 
 /// Latest schema version.
