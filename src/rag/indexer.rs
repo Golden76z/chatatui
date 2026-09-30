@@ -854,13 +854,19 @@ mod tests {
     async fn skipped_files_are_not_retried_and_a_name_updates_the_collection() {
         let setup = setup();
         let embedder = Arc::new(HashEmbedder::default());
-        let first = index_request(&setup, embedder.clone(), request(&setup)).await;
+        // A name that is not a folder of the working directory.
+        let name = "chatatui-test-collection";
+        let named = IndexRequest {
+            collection: name.into(),
+            ..request(&setup)
+        };
+        let first = index_request(&setup, embedder.clone(), named.clone()).await;
         assert_eq!(first.skipped.len(), 1);
 
-        // `/index docs`: the bare name finds the collection's folder.
+        // `/index <name>`: the bare name finds the collection's folder.
         let by_name = IndexRequest {
-            root: PathBuf::from("docs"),
-            ..request(&setup)
+            root: PathBuf::from(name),
+            ..named
         };
         let calls = embedder.calls.load(Ordering::SeqCst);
         let again = index_request(&setup, embedder.clone(), by_name).await;

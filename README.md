@@ -1,5 +1,7 @@
 # chatatui
 
+[![CI](https://github.com/Golden76z/chatatui/actions/workflows/ci.yml/badge.svg)](https://github.com/Golden76z/chatatui/actions/workflows/ci.yml)
+
 A minimal ChatGPT-like chat client for the terminal, built with
 [ratatui](https://ratatui.rs). **Local first** (Ollama by default), with optional cloud
 providers: OpenAI (ChatGPT models) and Anthropic (Claude).
@@ -23,16 +25,23 @@ Claude is reached through the native Anthropic Messages API.
   replies list the passages they cite
 - Configurable system prompt; network errors shown in the UI, never a crash
 
-## Requirements
+## Install
 
-- Rust 1.88 or newer (`rustup update`)
-- A C compiler: SQLite is bundled and compiled from source, as is the TLS backend
-- A running server, e.g. `ollama serve` and `ollama pull llama3.2`
+- **Binaries**: Linux (x86_64, arm64) and macOS (Apple silicon) archives are attached to
+  each [release](https://github.com/Golden76z/chatatui/releases); unpack and run
+  `chatatui`.
+- **From source**: `cargo install --git https://github.com/Golden76z/chatatui --locked`
+  (Rust 1.88 or newer, and a C compiler: SQLite and the TLS backend are compiled from
+  source).
+
+You also need a model server, e.g. `ollama serve` and `ollama pull llama3.2`. Optional:
+`tesseract-ocr` and `poppler-utils` to index scanned PDFs, `wl-clipboard` or `xclip` for
+`/copy`.
 
 ## Usage
 
 ```sh
-cargo run --release
+chatatui            # or, from a clone: cargo run --release
 ```
 
 On first launch a commented configuration file is created in the platform config

@@ -4,6 +4,10 @@ version = "0.1.0"
 description = "A minimal terminal chat client for local LLMs (OpenAI-compatible API)"
 authors = ["Damien <dap@csmrouen.com>"]
 license = "MIT"
+repository = "https://github.com/Golden76z/chatatui"
+readme = "README.md"
+keywords = ["tui", "llm", "ollama", "chat", "rag"]
+categories = ["command-line-utilities"]
 edition = "2024"
 rust-version = "1.88"
 
