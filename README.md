@@ -124,7 +124,8 @@ files, and skipping hidden files), extracts the text of Markdown, text, source c
   reason and not retried until they change.
 - At startup, and when `/collections` opens, chatatui checks whether the indexed folders
   changed and says which collections need an `/index`; with `auto_index = true` it
-  updates them itself, in the background.
+  updates them itself, in the background, and keeps watching their folders while it runs
+  (a few seconds after a file changes).
 - `/forget <name>` deletes a collection's index (asks to confirm; your files are not
   touched).
 
@@ -146,8 +147,17 @@ keyword_search = true           # also match the question's words (hybrid search
 exclude = ["*.min.js", "node_modules/"]   # never indexed
 ocr = true                      # read scanned PDFs (if tesseract and pdftoppm are installed)
 ocr_languages = "fra+eng"       # Tesseract languages (missing ones are skipped)
-auto_index = false              # update changed collections at startup
+auto_index = false              # update changed collections (at startup and while running)
+rerank_model = ""               # e.g. "bge-reranker-v2-m3": re-score passages (see below)
+rerank_provider = ""            # provider serving it (default: embedding_provider)
+rerank_candidates = 20          # passages re-scored before keeping top_k
 ```
+
+With `rerank_model` set, the best `rerank_candidates` passages of the hybrid search are
+re-scored by a cross-encoder through `POST /v1/rerank` (llama.cpp server started with
+`--reranking`, vLLM, Text Embeddings Inference, Jina…), and the `top_k` best are kept.
+More precise on pointed questions, at the cost of one extra request per reply; if the
+reranker is unreachable, the hybrid order is used.
 
 `/rag <collection>` makes the conversation search that collection before each reply. The
 question (with the previous one when it is a short follow-up) is searched by meaning

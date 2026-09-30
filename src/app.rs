@@ -805,6 +805,17 @@ impl App {
             }
             Action::FileRead(result) => self.on_file_read(result),
             Action::CopyLastReply => self.run_command(CommandId::Copy, ""),
+            Action::CollectionsChanged(names) => {
+                if !self.rag.auto_index {
+                    return Vec::new();
+                }
+                for name in names {
+                    if !self.index_queue.contains(&name) {
+                        self.index_queue.push(name);
+                    }
+                }
+                self.next_queued_index()
+            }
             Action::Exported(result) => {
                 self.status = match result {
                     Ok(path) => Status::Info(format!("conversation exportée : {path}")),
@@ -4250,6 +4261,47 @@ mod tests {
         assert_eq!(
             other.active_system_prompt(),
             Config::default().system_prompt
+        );
+    }
+
+    #[test]
+    fn changed_folders_are_indexed_when_auto_index_is_on() {
+        let mut app = app();
+        assert!(
+            app.update(Action::CollectionsChanged(vec!["cours".into()]))
+                .is_empty()
+        );
+
+        let mut config = Config::default();
+        config.rag.auto_index = true;
+        let mut app = App::new(&config, false);
+        let effects = app.update(Action::CollectionsChanged(vec![
+            "cours".into(),
+            "tp".into(),
+        ]));
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::StartIndex { collection, .. }] if collection == "cours"
+        ));
+        // A change during the run queues the collection once.
+        app.update(Action::CollectionsChanged(vec!["tp".into()]));
+        let effects = app.update(Action::Index(IndexEvent::Finished(IndexReport {
+            collection: "cours".into(),
+            ..IndexReport::default()
+        })));
+        assert!(
+            effects
+                .iter()
+                .any(|e| matches!(e, Effect::StartIndex { collection, .. } if collection == "tp"))
+        );
+        let effects = app.update(Action::Index(IndexEvent::Finished(IndexReport {
+            collection: "tp".into(),
+            ..IndexReport::default()
+        })));
+        assert!(
+            !effects
+                .iter()
+                .any(|e| matches!(e, Effect::StartIndex { .. }))
         );
     }
 }

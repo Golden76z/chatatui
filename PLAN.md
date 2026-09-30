@@ -124,6 +124,7 @@ tests/      app_flow.rs http_clients.rs fixtures/*.sse
 | J16 ✅ | RAG extras: OCR for scanned PDFs (tesseract + pdftoppm), `/rag a,b` over several collections, `auto_index` of changed collections at startup |
 | J17 ✅ | `/edit` last message and resend, `/retry [model]`, `/export [file.md]` to Markdown |
 | J18 ✅ | Comfort: `theme = auto\|dark\|light` (semantic palette, code theme), named system prompts `[prompts]` + `/persona` per conversation |
+| J19 ✅ | RAG: re-ranking through `/v1/rerank` (`rerank_model`, falls back to hybrid order), folders watched while running with `auto_index` (notify, debounced) |
 
 Each milestone ends with `cargo fmt`, `cargo clippy --all-targets -- -D warnings`,
 `cargo test` passing.
@@ -132,5 +133,4 @@ Out of scope for now: tool calling, themes.
 
 ## Next steps (ideas)
 
-- RAG: re-ranking with a cross-encoder; watching folders while chatatui runs.
 

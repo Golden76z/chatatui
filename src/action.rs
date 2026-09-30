@@ -77,6 +77,8 @@ pub enum Action {
     },
     /// A file requested with `/add` was read (or could not be).
     FileRead(Result<Attachment, String>),
+    /// Files of these collections changed on disk (`[rag] auto_index`).
+    CollectionsChanged(Vec<String>),
     /// Result of [`Effect::Export`]: the path written, or a user-facing error.
     Exported(Result<String, String>),
     /// Ctrl+Y: copy the last reply.

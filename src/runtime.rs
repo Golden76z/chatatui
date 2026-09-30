@@ -46,6 +46,8 @@ pub struct Runtime {
     rag: RagBackend,
     /// Cancellation handle of the running indexing job.
     running_index: Option<CancellationToken>,
+    /// Watch over the collections' folders (`[rag] auto_index`).
+    watch: Option<crate::rag::watch::Watch>,
 }
 
 /// The embedding backend and database file used by indexing, or why indexing is unavailable.
@@ -54,6 +56,8 @@ struct RagBackend {
     database: Result<PathBuf, String>,
     chunk_tokens: usize,
     exclude: Vec<String>,
+    /// Watch the collections' folders while running.
+    auto_index: bool,
     /// OCR for scanned PDFs (`None`: turned off or tools missing).
     ocr: Option<Ocr>,
 }
@@ -98,6 +102,7 @@ impl RagBackend {
             database,
             chunk_tokens: rag.chunk_tokens,
             exclude: rag.exclude.clone(),
+            auto_index: rag.auto_index,
             ocr: if rag.ocr {
                 Ocr::detect(&rag.ocr_languages)
             } else {
@@ -116,13 +121,17 @@ impl Runtime {
             llm::build_clients(&providers, Duration::from_secs(config.connect_timeout_secs));
         let provider_order = providers.iter().map(|p| p.id.clone()).collect();
         let rag = RagBackend::new(&config, &providers, &database);
+        let mut context = RagContext::new(
+            rag.embedder.clone(),
+            rag.database.clone(),
+            Selection::from(&config.rag),
+        );
+        if let Some(reranker) = build_reranker(&config, &providers) {
+            context = context.with_reranker(reranker, config.rag.rerank_candidates);
+        }
         let backends = stream_task::Backends {
             clients,
-            context: Arc::new(RagContext::new(
-                rag.embedder.clone(),
-                rag.database.clone(),
-                Selection::from(&config.rag),
-            )),
+            context: Arc::new(context),
         };
         let events = EventHandler::new();
         let sender = events.sender();
@@ -139,6 +148,7 @@ impl Runtime {
             store: Some(store),
             rag,
             running_index: None,
+            watch: None,
         })
     }
 
@@ -150,6 +160,7 @@ impl Runtime {
             height: size.height,
         });
         self.dispatch(Action::Init);
+        self.refresh_watch();
         let mut needs_redraw = true;
         while self.app.running {
             if needs_redraw {
@@ -200,7 +211,15 @@ impl Runtime {
             Event::App(AppEvent::Llm { request_id, event }) => {
                 Some(Action::Llm { request_id, event })
             }
-            Event::App(AppEvent::Storage(event)) => Some(Action::Storage(event)),
+            Event::App(AppEvent::Storage(event)) => {
+                if matches!(event, crate::storage::StoreEvent::CollectionDeleted { .. }) {
+                    self.refresh_watch();
+                }
+                Some(Action::Storage(event))
+            }
+            Event::App(AppEvent::CollectionsChanged(names)) => {
+                Some(Action::CollectionsChanged(names))
+            }
             Event::App(AppEvent::CollectionsChecked(result)) => {
                 Some(Action::CollectionsChecked(result))
             }
@@ -212,6 +231,10 @@ impl Runtime {
                         | IndexEvent::Cancelled { .. }
                 ) {
                     self.running_index = None;
+                }
+                if matches!(event, IndexEvent::Finished(_)) {
+                    // A new collection, or a moved folder.
+                    self.refresh_watch();
                 }
                 Some(Action::Index(event))
             }
@@ -398,6 +421,31 @@ impl Runtime {
 }
 
 impl Runtime {
+    /// (Re)starts watching the collections' folders, when `auto_index` is on.
+    fn refresh_watch(&mut self) {
+        if !self.rag.auto_index {
+            return;
+        }
+        let Ok(database) = &self.rag.database else {
+            return;
+        };
+        // A quick read (a few rows); the watch itself runs on notify's threads.
+        let roots: Vec<(String, PathBuf)> = crate::storage::Store::open(database)
+            .ok()
+            .map(crate::storage::Store::into_connection)
+            .and_then(|conn| crate::rag::store::collection_sources(&conn).ok())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|source| (source.name, PathBuf::from(source.root)))
+            .collect();
+        let sender = self.events.sender();
+        self.watch = crate::rag::watch::watch(roots, move |names| {
+            // Fails only while shutting down.
+            let _ = sender.send(Event::App(AppEvent::CollectionsChanged(names)));
+        })
+        .ok();
+    }
+
     /// Spawns the indexing job, or reports right away why it cannot run.
     fn start_index(&mut self, collection: String, root: &str, types: Option<Vec<String>>) {
         let sender = self.events.sender();
@@ -443,6 +491,31 @@ impl Runtime {
             },
         ));
     }
+}
+
+/// The reranker of `[rag]`, if one is configured (a misconfigured one is left out:
+/// replies then use the hybrid order).
+fn build_reranker(
+    config: &Config,
+    providers: &[crate::config::Provider],
+) -> Option<Arc<dyn crate::rag::rerank::Reranker>> {
+    let rag = &config.rag;
+    if rag.rerank_model.trim().is_empty() {
+        return None;
+    }
+    let id = if rag.rerank_provider.is_empty() {
+        &rag.embedding_provider
+    } else {
+        &rag.rerank_provider
+    };
+    let provider = providers.iter().find(|p| &p.id == id)?;
+    crate::rag::rerank::HttpReranker::new(
+        provider,
+        &rag.rerank_model,
+        Duration::from_secs(config.connect_timeout_secs),
+    )
+    .ok()
+    .map(|r| Arc::new(r) as Arc<dyn crate::rag::rerank::Reranker>)
 }
 
 /// A value unique to this process run, used to build conversation ids.

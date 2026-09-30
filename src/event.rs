@@ -49,6 +49,8 @@ pub enum AppEvent {
     CollectionsChecked(Result<Vec<crate::rag::indexer::Staleness>, String>),
     /// A file to attach was read.
     FileRead(Result<Attachment, String>),
+    /// Files of these collections changed on disk (`[rag] auto_index`).
+    CollectionsChanged(Vec<String>),
     /// Result of [`crate::action::Effect::Export`].
     Exported(Result<String, String>),
     /// Result of [`crate::action::Effect::Copy`].

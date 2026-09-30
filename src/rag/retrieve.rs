@@ -22,6 +22,7 @@ use async_trait::async_trait;
 use super::{
     RagConfig,
     embed::Embedder,
+    rerank::Reranker,
     store::{self, StoredChunk},
 };
 use crate::{
@@ -78,6 +79,8 @@ pub struct RagContext {
     embedder: Result<Arc<dyn Embedder>, String>,
     database: Result<PathBuf, String>,
     selection: Selection,
+    /// Re-ranks this many candidates when set.
+    reranker: Option<(Arc<dyn Reranker>, usize)>,
     /// By collection name.
     cache: Mutex<HashMap<String, Loaded>>,
 }
@@ -104,8 +107,15 @@ impl RagContext {
             embedder,
             database,
             selection,
+            reranker: None,
             cache: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Re-ranks the `candidates` best passages with `reranker` before keeping `top_k`.
+    pub fn with_reranker(mut self, reranker: Arc<dyn Reranker>, candidates: usize) -> Self {
+        self.reranker = Some((reranker, candidates.max(1)));
+        self
     }
 
     /// Ids of the passages matching the question's keywords, best first.
@@ -220,9 +230,19 @@ impl ContextProvider for RagContext {
             .iter()
             .map(|(name, chunks)| (several.then_some(*name), chunks.as_slice()))
             .collect();
-        Ok(Context {
-            chunks: select_in(&groups, &vector, &keyword_hits, self.selection),
-        })
+        let chunks = match &self.reranker {
+            Some((reranker, candidates)) => {
+                let wide = Selection {
+                    top_k: (*candidates).max(self.selection.top_k),
+                    context_tokens: u64::MAX,
+                    ..self.selection
+                };
+                let candidates = select_in(&groups, &vector, &keyword_hits, wide);
+                rerank(reranker.as_ref(), &question, candidates, self.selection).await
+            }
+            None => select_in(&groups, &vector, &keyword_hits, self.selection),
+        };
+        Ok(Context { chunks })
     }
 }
 
@@ -339,13 +359,29 @@ pub fn select_in(
     }
     fused.sort_by(|a, b| b.0.total_cmp(&a.0));
 
+    let ranked = fused.into_iter().map(|(_, prefix, chunk)| ContextChunk {
+        source: match prefix {
+            Some(collection) => format!("{collection} › {}", chunk.path),
+            None => chunk.path.clone(),
+        },
+        location: chunk.location.clone(),
+        text: chunk.text.clone(),
+    });
+    limit(ranked, selection)
+}
+
+/// The first passages of `ranked` within `top_k` and the token budget, without
+/// duplicates (a file copied twice).
+fn limit(
+    ranked: impl IntoIterator<Item = ContextChunk>,
+    selection: Selection,
+) -> Vec<ContextChunk> {
     let mut picked: Vec<ContextChunk> = Vec::new();
     let mut used = 0;
-    for (_, prefix, chunk) in fused {
+    for chunk in ranked {
         if picked.len() >= selection.top_k {
             break;
         }
-        // Identical passages (a file copied twice) are given once.
         if picked.iter().any(|p| p.text == chunk.text) {
             continue;
         }
@@ -354,16 +390,30 @@ pub fn select_in(
             continue;
         }
         used += cost;
-        picked.push(ContextChunk {
-            source: match prefix {
-                Some(collection) => format!("{collection} › {}", chunk.path),
-                None => chunk.path.clone(),
-            },
-            location: chunk.location.clone(),
-            text: chunk.text.clone(),
-        });
+        picked.push(chunk);
     }
     picked
+}
+
+/// Re-orders `candidates` by the reranker's scores and keeps the best within
+/// `selection`; keeps their current order if the reranker fails.
+pub async fn rerank(
+    reranker: &dyn Reranker,
+    question: &str,
+    candidates: Vec<ContextChunk>,
+    selection: Selection,
+) -> Vec<ContextChunk> {
+    let texts: Vec<String> = candidates.iter().map(|c| c.text.clone()).collect();
+    match reranker.rerank(question, &texts).await {
+        Ok(scores) if scores.len() == candidates.len() => {
+            let mut scored: Vec<(f32, ContextChunk)> = scores.into_iter().zip(candidates).collect();
+            // Stable: equal scores keep the hybrid order.
+            scored.sort_by(|a, b| b.0.total_cmp(&a.0));
+            limit(scored.into_iter().map(|(_, c)| c), selection)
+        }
+        // A reranker that is down should not stop the answer.
+        _ => limit(candidates, selection),
+    }
 }
 
 fn dot(a: &[f32], b: &[f32]) -> f32 {
@@ -644,5 +694,42 @@ mod tests {
             .await;
         assert!(missing.is_err(), "every collection must exist");
         assert_eq!(collection_names(" a, b,a ,"), vec!["a", "b"]);
+    }
+
+    #[tokio::test]
+    async fn the_reranker_reorders_candidates_and_its_failure_is_harmless() {
+        use crate::{
+            llm::LlmError,
+            rag::rerank::{Reranker, WordReranker},
+        };
+        let chunk = |source: &str, text: &str| ContextChunk {
+            source: source.into(),
+            location: String::new(),
+            text: text.into(),
+        };
+        let candidates = vec![
+            chunk("a.md", "généralités sur Rust"),
+            chunk("b.md", "le borrow checker vérifie les emprunts"),
+            chunk("c.md", "emprunts mutables et borrow checker en détail"),
+        ];
+        let one = Selection { top_k: 1, ..WIDE };
+        let best = rerank(
+            &WordReranker,
+            "borrow checker emprunts mutables",
+            candidates.clone(),
+            one,
+        )
+        .await;
+        assert_eq!(best[0].source, "c.md");
+
+        struct Down;
+        #[async_trait]
+        impl Reranker for Down {
+            async fn rerank(&self, _: &str, _: &[String]) -> Result<Vec<f32>, LlmError> {
+                Err(LlmError::Protocol("injoignable".into()))
+            }
+        }
+        let kept = rerank(&Down, "x", candidates, one).await;
+        assert_eq!(kept[0].source, "a.md", "hybrid order kept");
     }
 }

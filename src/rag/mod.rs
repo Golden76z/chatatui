@@ -12,8 +12,10 @@ pub mod embed;
 pub mod extract;
 pub mod indexer;
 pub mod ocr;
+pub mod rerank;
 pub mod retrieve;
 pub mod store;
+pub mod watch;
 
 use serde::Deserialize;
 
@@ -42,8 +44,15 @@ pub struct RagConfig {
     pub ocr: bool,
     /// Tesseract languages, e.g. `fra+eng` (those without data installed are skipped).
     pub ocr_languages: String,
-    /// At startup, update the collections whose folder changed (`/index` in background).
+    /// Update the collections whose folder changed, at startup and while chatatui runs
+    /// (`/index` in the background).
     pub auto_index: bool,
+    /// Re-ranking model (`/v1/rerank`); empty: no re-ranking.
+    pub rerank_model: String,
+    /// Provider serving `rerank_model` (default: the embedding provider).
+    pub rerank_provider: String,
+    /// Passages given to the reranker.
+    pub rerank_candidates: usize,
 }
 
 impl Default for RagConfig {
@@ -60,6 +69,9 @@ impl Default for RagConfig {
             ocr: true,
             ocr_languages: "fra+eng".into(),
             auto_index: false,
+            rerank_model: String::new(),
+            rerank_provider: String::new(),
+            rerank_candidates: 20,
         }
     }
 }

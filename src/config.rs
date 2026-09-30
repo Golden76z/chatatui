@@ -57,7 +57,10 @@ auto_compact = false
 # exclude = ["*.min.js", "node_modules/"]  # never indexed (also: .chatatuiignore files)
 # ocr = true               # read scanned PDFs if tesseract and poppler-utils are installed
 # ocr_languages = "fra+eng"
-# auto_index = false       # at startup, update the collections whose folder changed
+# auto_index = false       # update changed collections (at startup and while running)
+# rerank_model = ""        # e.g. "bge-reranker-v2-m3" on a server with /v1/rerank
+# rerank_provider = ""     # provider serving it (default: embedding_provider)
+# rerank_candidates = 20   # passages re-scored before keeping top_k
 
 # Providers. "ollama", "openai" (ChatGPT) and "claude" are predefined: the sections below
 # only override their settings. Add your own OpenAI-compatible server the same way, e.g.
