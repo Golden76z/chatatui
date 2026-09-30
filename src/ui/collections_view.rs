@@ -6,7 +6,11 @@ use ratatui::{
 };
 
 use super::sidebar::ago;
-use crate::{app::App, markdown::wrap_spans, tokens::format_count};
+use crate::{
+    app::{App, staleness_summary},
+    markdown::wrap_spans,
+    tokens::format_count,
+};
 
 /// Skipped files listed in the report before "… et N autres".
 const SKIPPED_SHOWN: usize = 8;
@@ -51,15 +55,35 @@ pub fn lines(app: &App, width: usize) -> Vec<Line<'static>> {
                     vec![Span::styled(collection.root.clone(), dim)],
                     3,
                 );
-                lines.push(Line::from(vec![
-                    Span::raw("   "),
-                    Span::raw(format!(
-                        "{} documents · {} passages · {}",
+                let types = if collection.types.is_empty() {
+                    String::new()
+                } else {
+                    format!(" · types : {}", collection.types.join(", "))
+                };
+                wrapped(
+                    &mut lines,
+                    vec![Span::raw(format!(
+                        "{} documents · {} passages · {}{types}",
                         format_count(collection.documents),
                         format_count(collection.chunks),
                         collection.embedding_model
-                    )),
-                ]));
+                    ))],
+                    3,
+                );
+                if let Some(stale) = app.stale.iter().find(|s| s.collection == collection.name) {
+                    wrapped(
+                        &mut lines,
+                        vec![Span::styled(
+                            format!(
+                                "⚠ {} depuis l'indexation : /index {}",
+                                staleness_summary(stale),
+                                collection.name
+                            ),
+                            Style::default().fg(Color::Yellow),
+                        )],
+                        3,
+                    );
+                }
                 lines.push(Line::default());
             }
         }
@@ -128,7 +152,8 @@ pub fn lines(app: &App, width: usize) -> Vec<Line<'static>> {
     wrapped(
         &mut lines,
         vec![Span::styled(
-            "/index <dossier> [nom] indexe ou met à jour · /rag <nom> l'utilise pour répondre",
+            "/index <dossier> [nom] [--types pdf,md] indexe · /index <nom> met à jour · \
+             /rag <nom> l'utilise pour répondre · /forget <nom> la supprime",
             dim,
         )],
         1,

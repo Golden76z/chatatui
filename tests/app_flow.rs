@@ -83,6 +83,7 @@ impl Harness {
                 top_k: 1,
                 context_tokens: 10_000,
                 min_score: 0.0,
+                keywords: true,
             },
         ));
         h
@@ -113,7 +114,18 @@ impl Harness {
                         self.tx.clone(),
                     ));
                 }
-                Effect::StartIndex { collection, root } => {
+                Effect::CheckCollections => {
+                    let database = self.database.clone()?;
+                    return Some(Action::CollectionsChecked(indexer::check_collections(
+                        &database,
+                        &[],
+                    )));
+                }
+                Effect::StartIndex {
+                    collection,
+                    root,
+                    types,
+                } => {
                     let database = self.database.clone().expect("a file database");
                     let token = CancellationToken::new();
                     self.index_cancel = Some(token.clone());
@@ -123,6 +135,8 @@ impl Harness {
                             collection,
                             root: root.into(),
                             chunk_tokens: 200,
+                            types,
+                            ..IndexRequest::default()
                         },
                         database,
                         Arc::new(HashEmbedder::default()),
@@ -904,4 +918,57 @@ async fn rag_answers_from_the_collection_and_keeps_the_sources() {
             .citations
             .is_empty()
     );
+}
+
+#[tokio::test]
+async fn keywords_find_codes_changes_are_noticed_and_forget_deletes() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let docs = dir.path().join("support");
+    std::fs::create_dir(&docs).expect("mkdir");
+    std::fs::write(
+        docs.join("tickets.md"),
+        "# Tickets\n\nLe module XK-42 gère les tickets.",
+    )
+    .expect("write");
+    std::fs::write(
+        docs.join("accueil.md"),
+        "# Accueil\n\nBienvenue sur la plateforme, voici comment démarrer.",
+    )
+    .expect("write");
+    let llm = Arc::new(MockLlmClient::new([MockReply::tokens(&["Voir [1]."])]));
+    let mut h = Harness::with_database_and_llm(&dir.path().join("db.sqlite"), llm.clone());
+    h.command(&format!("/index {}", docs.display()));
+    h.run_until_indexed().await;
+    h.command("/rag support");
+
+    // Hash embeddings know nothing of "XK-42": the keyword search finds it.
+    h.send("XK-42 ?");
+    h.run_until_idle().await;
+    let request = llm.requests().pop().expect("request");
+    assert!(
+        request.messages[0]
+            .content
+            .contains("[1] tickets.md § Tickets")
+    );
+
+    // A file changes: the startup check notices it.
+    std::fs::write(docs.join("nouveau.md"), "# Nouveau\n\ntexte").expect("write");
+    h.app.status = Status::Ready;
+    h.dispatch(Action::Init);
+    assert!(
+        matches!(&h.app.status, Status::Info(m) if m == "« support » : 1 nouveau fichier (/index support pour mettre à jour)"),
+        "{:?}",
+        h.app.status
+    );
+    // Updating by name clears it.
+    h.command("/index support");
+    h.run_until_indexed().await;
+    assert_eq!(h.app.last_index.as_ref().map(|r| r.added), Some(1));
+    assert!(h.app.stale.is_empty());
+
+    h.command("/forget support");
+    h.dispatch(Action::Submit);
+    assert_eq!(h.app.rag_collection, None);
+    h.command("/collections");
+    assert_eq!(h.app.collections.as_ref().map(|c| c.0.len()), Some(0));
 }

@@ -5,7 +5,7 @@ use crossterm::event::KeyEvent;
 use crate::{
     files::Attachment,
     llm::{LlmEvent, ProviderModels, RequestId, stream_task::CompletionJob},
-    rag::indexer::IndexEvent,
+    rag::indexer::{IndexEvent, Staleness},
     storage::{StoreEvent, StoreRequest},
 };
 
@@ -71,6 +71,8 @@ pub enum Action {
     FileRead(Result<Attachment, String>),
     /// Progress of the indexing job.
     Index(IndexEvent),
+    /// How the collections' folders differ from their index.
+    CollectionsChecked(Result<Vec<Staleness>, String>),
     /// A key that is not a shortcut, forwarded to the text input.
     Edit(KeyEvent),
     /// Text pasted by the terminal (bracketed paste); inserted verbatim.
@@ -130,8 +132,15 @@ pub enum Effect {
     ReadFile(String),
     /// List the completions of a partial path.
     CompletePath(String),
-    /// Index a folder (`root` as typed; `~` allowed) into a collection.
-    StartIndex { collection: String, root: String },
+    /// Index a folder (`root` as typed; `~` allowed, or a collection name to update it)
+    /// into a collection, limited to `types` (`None`: the collection's current choice).
+    StartIndex {
+        collection: String,
+        root: String,
+        types: Option<Vec<String>>,
+    },
     /// Stop the running indexing job.
     CancelIndex,
+    /// Compare the collections' folders with their index.
+    CheckCollections,
 }

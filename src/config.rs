@@ -37,6 +37,8 @@ mouse_capture = true
 # top_k = 5              # passages given to the model per reply (/rag)
 # context_tokens = 3000  # their token budget
 # min_score = 0.3        # similarity below which a passage is left out
+# keyword_search = true  # also match the question's words (hybrid search)
+# exclude = ["*.min.js", "node_modules/"]  # never indexed (also: .chatatuiignore files)
 
 # Providers. "ollama", "openai" (ChatGPT) and "claude" are predefined: the sections below
 # only override their settings. Add your own OpenAI-compatible server the same way, e.g.

@@ -1,4 +1,7 @@
-//! Collections, documents and passages in SQLite (tables `rag_*`, schema v4).
+//! Collections, documents and passages in SQLite (tables `rag_*`, schemas v4 and v6).
+//!
+//! `rag_fts` is an FTS5 index over the passages' text, kept in sync by triggers, for the
+//! keyword half of hybrid search.
 //!
 //! Functions take a plain connection so that both the storage worker (listing) and the
 //! indexer (writing, on its own connection) can use them. Vectors are stored as
@@ -26,6 +29,8 @@ pub struct CollectionSummary {
     pub name: String,
     pub root: String,
     pub embedding_model: String,
+    /// File extensions indexed (empty: every supported type).
+    pub types: Vec<String>,
     pub documents: u64,
     pub chunks: u64,
     /// Unix seconds.
@@ -33,17 +38,21 @@ pub struct CollectionSummary {
 }
 
 /// What is known about an indexed file.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DocumentState {
     pub id: i64,
     pub size: u64,
     pub mtime: i64,
     pub hash: u64,
+    /// Why the file could not be indexed (it then has no passages).
+    pub skipped: Option<String>,
 }
 
 /// A passage loaded for search.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StoredChunk {
+    /// Row id (also the keyword index's rowid).
+    pub id: i64,
     /// Path relative to the collection root.
     pub path: String,
     pub location: String,
@@ -129,7 +138,8 @@ pub fn documents(
     collection_id: i64,
 ) -> Result<HashMap<String, DocumentState>, StoreError> {
     let mut statement = conn.prepare(
-        "SELECT id, path, size, mtime, hash FROM rag_documents WHERE collection_id = ?1",
+        "SELECT id, path, size, mtime, hash, skipped FROM rag_documents
+         WHERE collection_id = ?1",
     )?;
     let rows = statement.query_map([collection_id], |r| {
         Ok((
@@ -139,6 +149,7 @@ pub fn documents(
                 size: to_u64(r.get(2)?),
                 mtime: r.get(3)?,
                 hash: to_u64(r.get(4)?),
+                skipped: r.get(5)?,
             },
         ))
     })?;
@@ -194,6 +205,30 @@ pub fn write_document(
     Ok(())
 }
 
+/// Records a file that could not be indexed, so that it is not retried until it changes.
+pub fn write_skipped(
+    conn: &mut Connection,
+    collection_id: i64,
+    path: &str,
+    size: u64,
+    mtime: i64,
+    reason: &str,
+    now: i64,
+) -> Result<(), StoreError> {
+    let tx = conn.transaction()?;
+    tx.execute(
+        "DELETE FROM rag_documents WHERE collection_id = ?1 AND path = ?2",
+        params![collection_id, path],
+    )?;
+    tx.execute(
+        "INSERT INTO rag_documents (collection_id, path, size, mtime, hash, indexed_at, skipped)
+         VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6)",
+        params![collection_id, path, to_i64(size), mtime, now, reason],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
 /// Records a new modification time for an unchanged file.
 pub fn touch_document(conn: &Connection, id: i64, mtime: i64) -> Result<(), StoreError> {
     conn.execute(
@@ -221,8 +256,9 @@ pub fn finish_collection(conn: &Connection, id: i64, now: i64) -> Result<(), Sto
 /// All collections with their sizes, by name.
 pub fn list_collections(conn: &Connection) -> Result<Vec<CollectionSummary>, StoreError> {
     let mut statement = conn.prepare(
-        "SELECT c.name, c.root, c.embedding_model, c.updated_at,
-                (SELECT COUNT(*) FROM rag_documents d WHERE d.collection_id = c.id),
+        "SELECT c.name, c.root, c.embedding_model, c.updated_at, c.types,
+                (SELECT COUNT(*) FROM rag_documents d
+                  WHERE d.collection_id = c.id AND d.skipped IS NULL),
                 (SELECT COUNT(*) FROM rag_chunks k JOIN rag_documents d ON k.document_id = d.id
                   WHERE d.collection_id = c.id)
          FROM rag_collections c ORDER BY c.name",
@@ -233,8 +269,9 @@ pub fn list_collections(conn: &Connection) -> Result<Vec<CollectionSummary>, Sto
             root: r.get(1)?,
             embedding_model: r.get(2)?,
             updated_at: r.get(3)?,
-            documents: u64::try_from(r.get::<_, i64>(4)?).unwrap_or(0),
-            chunks: u64::try_from(r.get::<_, i64>(5)?).unwrap_or(0),
+            types: decode_types(&r.get::<_, String>(4)?),
+            documents: u64::try_from(r.get::<_, i64>(5)?).unwrap_or(0),
+            chunks: u64::try_from(r.get::<_, i64>(6)?).unwrap_or(0),
         })
     })?;
     Ok(rows.collect::<Result<_, _>>()?)
@@ -242,6 +279,105 @@ pub fn list_collections(conn: &Connection) -> Result<Vec<CollectionSummary>, Sto
 
 /// Changes whenever the passages of a collection do: (count, highest id).
 pub type ChunksVersion = (u64, i64);
+
+/// Ids of the passages of `collection` matching the FTS5 `query`, best first (BM25).
+pub fn keyword_search(
+    conn: &Connection,
+    collection: &str,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<i64>, StoreError> {
+    let mut statement = conn.prepare(
+        "SELECT f.rowid FROM rag_fts f
+         JOIN rag_chunks k ON k.id = f.rowid
+         JOIN rag_documents d ON d.id = k.document_id
+         JOIN rag_collections c ON c.id = d.collection_id
+         WHERE rag_fts MATCH ?1 AND c.name = ?2
+         ORDER BY bm25(rag_fts)
+         LIMIT ?3",
+    )?;
+    let rows = statement.query_map(
+        params![query, collection, i64::try_from(limit).unwrap_or(i64::MAX)],
+        |r| r.get(0),
+    )?;
+    Ok(rows.collect::<Result<_, _>>()?)
+}
+
+/// Where a collection's files come from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CollectionSource {
+    pub id: i64,
+    pub name: String,
+    pub root: String,
+    /// File extensions indexed (empty: every supported type).
+    pub types: Vec<String>,
+}
+
+/// Folder and file types of a collection (`None`: no such collection).
+pub fn collection_source(
+    conn: &Connection,
+    name: &str,
+) -> Result<Option<CollectionSource>, StoreError> {
+    Ok(conn
+        .query_row(
+            "SELECT id, name, root, types FROM rag_collections WHERE name = ?1",
+            [name],
+            |r| {
+                Ok(CollectionSource {
+                    id: r.get(0)?,
+                    name: r.get(1)?,
+                    root: r.get(2)?,
+                    types: decode_types(&r.get::<_, String>(3)?),
+                })
+            },
+        )
+        .optional()?)
+}
+
+/// Every collection's source, by name.
+pub fn collection_sources(conn: &Connection) -> Result<Vec<CollectionSource>, StoreError> {
+    let mut statement =
+        conn.prepare("SELECT id, name, root, types FROM rag_collections ORDER BY name")?;
+    let rows = statement.query_map([], |r| {
+        Ok(CollectionSource {
+            id: r.get(0)?,
+            name: r.get(1)?,
+            root: r.get(2)?,
+            types: decode_types(&r.get::<_, String>(3)?),
+        })
+    })?;
+    Ok(rows.collect::<Result<_, _>>()?)
+}
+
+/// Records the file types a collection is limited to (empty: all).
+pub fn set_types(conn: &Connection, id: i64, types: &[String]) -> Result<(), StoreError> {
+    conn.execute(
+        "UPDATE rag_collections SET types = ?2 WHERE id = ?1",
+        params![id, types.join(",")],
+    )?;
+    Ok(())
+}
+
+/// Deletes a collection and its passages; conversations using it stop searching it.
+/// Returns `false` if there was no such collection.
+pub fn delete_collection(conn: &mut Connection, name: &str) -> Result<bool, StoreError> {
+    let tx = conn.transaction()?;
+    let deleted = tx.execute("DELETE FROM rag_collections WHERE name = ?1", [name])?;
+    tx.execute(
+        "UPDATE conversations SET rag_collection = NULL WHERE rag_collection = ?1",
+        [name],
+    )?;
+    tx.commit()?;
+    Ok(deleted > 0)
+}
+
+fn decode_types(types: &str) -> Vec<String> {
+    types
+        .split(',')
+        .filter(|t| !t.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
 
 /// Embedding model of a collection and a value that changes whenever its passages do
 /// (`None`: no such collection).
@@ -274,7 +410,7 @@ pub fn collection_state(
 /// Every passage of a collection, with its vector (for search).
 pub fn load_chunks(conn: &Connection, collection: &str) -> Result<Vec<StoredChunk>, StoreError> {
     let mut statement = conn.prepare(
-        "SELECT d.path, k.location, k.text, k.embedding
+        "SELECT k.id, d.path, k.location, k.text, k.embedding
          FROM rag_chunks k
          JOIN rag_documents d ON k.document_id = d.id
          JOIN rag_collections c ON d.collection_id = c.id
@@ -283,10 +419,11 @@ pub fn load_chunks(conn: &Connection, collection: &str) -> Result<Vec<StoredChun
     )?;
     let rows = statement.query_map([collection], |r| {
         Ok(StoredChunk {
-            path: r.get(0)?,
-            location: r.get(1)?,
-            text: r.get(2)?,
-            vector: decode_vector(&r.get::<_, Vec<u8>>(3)?),
+            id: r.get(0)?,
+            path: r.get(1)?,
+            location: r.get(2)?,
+            text: r.get(3)?,
+            vector: decode_vector(&r.get::<_, Vec<u8>>(4)?),
         })
     })?;
     Ok(rows.collect::<Result<_, _>>()?)
@@ -392,5 +529,97 @@ mod tests {
         let (_, reset) = open_collection(&conn, "c", "/r", "model-b", 3).expect("new model");
         assert!(reset);
         assert!(documents(&conn, collection.id).expect("docs").is_empty());
+    }
+
+    #[test]
+    fn keyword_index_follows_writes_and_deletes() {
+        let mut conn = conn();
+        let (collection, _) = open_collection(&conn, "cours", "/r", "m", 1).expect("open");
+        let (other, _) = open_collection(&conn, "autre", "/o", "m", 1).expect("open");
+        let write = |conn: &mut Connection, id: i64, path: &str, text: &str| {
+            write_document(
+                conn,
+                id,
+                path,
+                1,
+                1,
+                1,
+                &[passage(0, text)],
+                &[vec![1.0]],
+                1,
+            )
+            .expect("write");
+        };
+        write(
+            &mut conn,
+            collection.id,
+            "a.md",
+            "Le module XK-42 gère les tickets",
+        );
+        write(&mut conn, collection.id, "b.md", "Les élèves rendent le TP");
+        write(&mut conn, other.id, "c.md", "XK-42 aussi ici");
+        let hits =
+            |conn: &Connection, q: &str| keyword_search(conn, "cours", q, 10).expect("search");
+        assert_eq!(
+            hits(&conn, "\"xk\"* OR \"42\"*").len(),
+            1,
+            "only this collection"
+        );
+        assert_eq!(hits(&conn, "\"eleve\"*").len(), 1, "accents are ignored");
+
+        // Rewriting a file replaces its passages in the keyword index too.
+        write(&mut conn, collection.id, "a.md", "Plus rien à voir");
+        assert!(hits(&conn, "\"xk\"*").is_empty());
+        assert_eq!(hits(&conn, "\"voir\"*").len(), 1);
+
+        // Deleting the collection removes everything and frees its conversations.
+        conn.execute(
+            "INSERT INTO conversations (id, title, model, created_at, updated_at, rag_collection)
+             VALUES ('c1', 't', 'm', 0, 0, 'cours')",
+            [],
+        )
+        .expect("conversation");
+        assert!(delete_collection(&mut conn, "cours").expect("delete"));
+        assert!(!delete_collection(&mut conn, "cours").expect("delete"));
+        assert!(hits(&conn, "\"voir\"*").is_empty());
+        let rag: Option<String> = conn
+            .query_row("SELECT rag_collection FROM conversations", [], |r| r.get(0))
+            .expect("row");
+        assert_eq!(rag, None);
+        let names: Vec<String> = list_collections(&conn)
+            .expect("list")
+            .into_iter()
+            .map(|c| c.name)
+            .collect();
+        assert_eq!(names, vec!["autre"]);
+    }
+
+    #[test]
+    fn skipped_files_are_remembered_but_not_counted() {
+        let mut conn = conn();
+        let (collection, _) = open_collection(&conn, "c", "/r", "m", 1).expect("open");
+        write_skipped(
+            &mut conn,
+            collection.id,
+            "scan.pdf",
+            10,
+            5,
+            "PDF sans texte",
+            1,
+        )
+        .expect("skip");
+        let docs = documents(&conn, collection.id).expect("docs");
+        assert_eq!(docs["scan.pdf"].skipped.as_deref(), Some("PDF sans texte"));
+        assert_eq!(list_collections(&conn).expect("list")[0].documents, 0);
+
+        set_types(&conn, collection.id, &["pdf".into(), "md".into()]).expect("types");
+        let source = collection_source(&conn, "c")
+            .expect("source")
+            .expect("exists");
+        assert_eq!(source.types, vec!["pdf", "md"]);
+        assert_eq!(
+            list_collections(&conn).expect("list")[0].types,
+            vec!["pdf", "md"]
+        );
     }
 }

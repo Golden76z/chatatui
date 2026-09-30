@@ -86,6 +86,8 @@ pub enum StoreRequest {
     Load(ConversationId),
     /// List document collections (RAG).
     ListCollections,
+    /// Delete a document collection's index (`/forget`).
+    DeleteCollection(String),
 }
 
 /// Results reported by the storage worker.
@@ -97,6 +99,11 @@ pub enum StoreEvent {
         now: i64,
     },
     Loaded(StoredConversation),
+    /// Result of [`StoreRequest::DeleteCollection`]: `found` is `false` if there was none.
+    CollectionDeleted {
+        name: String,
+        found: bool,
+    },
     /// Document collections (RAG), listed at `now` (Unix seconds).
     Collections {
         collections: Vec<crate::rag::store::CollectionSummary>,
@@ -183,6 +190,10 @@ impl Store {
                 })
             }),
             StoreRequest::Load(id) => self.load(&id).map(|c| Some(StoreEvent::Loaded(c))),
+            StoreRequest::DeleteCollection(name) => {
+                crate::rag::store::delete_collection(&mut self.conn, &name)
+                    .map(|found| Some(StoreEvent::CollectionDeleted { name, found }))
+            }
             StoreRequest::ListCollections => {
                 crate::rag::store::list_collections(&self.conn).map(|collections| {
                     Some(StoreEvent::Collections {

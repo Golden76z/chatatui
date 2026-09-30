@@ -74,6 +74,25 @@ const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE messages ADD COLUMN citations TEXT;
     "#,
+    // v6: keyword index of the passages (hybrid search), per-collection file types, and
+    // files that could not be indexed (with the reason, so they are not retried).
+    r#"
+    CREATE VIRTUAL TABLE rag_fts USING fts5(
+        text,
+        content = 'rag_chunks',
+        content_rowid = 'id',
+        tokenize = 'unicode61 remove_diacritics 2'
+    );
+    CREATE TRIGGER rag_chunks_fts_insert AFTER INSERT ON rag_chunks BEGIN
+        INSERT INTO rag_fts (rowid, text) VALUES (new.id, new.text);
+    END;
+    CREATE TRIGGER rag_chunks_fts_delete AFTER DELETE ON rag_chunks BEGIN
+        INSERT INTO rag_fts (rag_fts, rowid, text) VALUES ('delete', old.id, old.text);
+    END;
+    INSERT INTO rag_fts (rag_fts) VALUES ('rebuild');
+    ALTER TABLE rag_collections ADD COLUMN types TEXT NOT NULL DEFAULT '';
+    ALTER TABLE rag_documents ADD COLUMN skipped TEXT;
+    "#,
 ];
 
 /// Latest schema version.
@@ -86,16 +105,22 @@ pub fn version(conn: &Connection) -> rusqlite::Result<usize> {
 }
 
 /// Applies the missing migrations, each in its own transaction.
+///
+/// Several connections may open the database at once (the storage worker, the indexer,
+/// the startup check, another chatatui): each step takes the write lock first and reads
+/// the version inside its transaction, so a migration is never applied twice.
 pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
-    let current = version(conn)?;
-    for (index, script) in MIGRATIONS.iter().enumerate().skip(current) {
-        let tx = conn.transaction()?;
+    loop {
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let current = version(&tx)?;
+        let Some(script) = MIGRATIONS.get(current) else {
+            return tx.commit();
+        };
         tx.execute_batch(script)?;
-        let next = i64::try_from(index + 1).unwrap_or(i64::MAX);
+        let next = i64::try_from(current + 1).unwrap_or(i64::MAX);
         tx.pragma_update(None, "user_version", next)?;
         tx.commit()?;
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -140,6 +165,24 @@ mod tests {
         let mut conn = Connection::open_in_memory().expect("in-memory db");
         migrate(&mut conn).expect("first");
         migrate(&mut conn).expect("second");
+        assert_eq!(version(&conn).expect("version"), LATEST_VERSION);
+    }
+
+    #[test]
+    fn concurrent_openers_migrate_once() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("db.sqlite");
+        let openers: Vec<_> = (0..6)
+            .map(|_| {
+                let path = path.clone();
+                std::thread::spawn(move || crate::storage::Store::open(&path).map(|_| ()))
+            })
+            .collect();
+        for opener in openers {
+            let opened = opener.join().expect("no panic");
+            assert!(opened.is_ok(), "{opened:?}");
+        }
+        let conn = Connection::open(&path).expect("open");
         assert_eq!(version(&conn).expect("version"), LATEST_VERSION);
     }
 }

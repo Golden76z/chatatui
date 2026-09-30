@@ -99,12 +99,21 @@ Conversations are stored in `~/.local/share/chatatui/chatatui.db`.
 
 ### Document indexing (RAG)
 
-`/index <folder> [name]` walks a folder (respecting `.gitignore` and skipping hidden
-files), extracts the text of Markdown, text, source code, PDF, `.docx` and `.odt` files,
-splits it into passages that remember where they come from (`§ heading`, `p. 3`,
-`L12-40`), embeds them and stores them in the same database. Running it again only
-processes files that changed and drops the ones that disappeared. `Esc` stops a run; what
-was done is kept. Scanned PDFs (images without text) are reported as skipped.
+`/index <folder> [name]` walks a folder (respecting `.gitignore` and `.chatatuiignore`
+files, and skipping hidden files), extracts the text of Markdown, text, source code, PDF,
+`.docx` and `.odt` files, splits it into passages that remember where they come from
+(`§ heading`, `p. 3`, `L12-40`), embeds them and stores them in the same database.
+
+- `/index <name>` updates an existing collection: only files that changed are processed,
+  and the ones that disappeared are dropped. `Esc` stops a run; what was done is kept.
+- `--types pdf,md,docx` limits a collection to some file types (`code` means every
+  source file); the choice is remembered, `--types all` lifts it.
+- Files that cannot be indexed (scanned PDFs, binary files) are reported once with the
+  reason and not retried until they change.
+- At startup, and when `/collections` opens, chatatui checks whether the indexed folders
+  changed and says which collections need an `/index`.
+- `/forget <name>` deletes a collection's index (asks to confirm; your files are not
+  touched).
 
 Embeddings come from Ollama by default, so documents never leave the machine:
 
@@ -120,11 +129,15 @@ chunk_tokens = 800              # passage size
 top_k = 5                       # passages given to the model per reply
 context_tokens = 3000           # their token budget
 min_score = 0.3                 # similarity (0–1) below which a passage is left out
+keyword_search = true           # also match the question's words (hybrid search)
+exclude = ["*.min.js", "node_modules/"]   # never indexed
 ```
 
-`/rag <collection>` makes the conversation search that collection before each reply: the
-question (with the previous one when it is a short follow-up) is embedded and compared to
-every passage, and the best ones are added to the prompt as numbered sources. The reply
+`/rag <collection>` makes the conversation search that collection before each reply. The
+question (with the previous one when it is a short follow-up) is searched by meaning
+(embedding similarity) and by keywords (SQLite FTS5, accents ignored, which catches names,
+codes and rare terms), the two rankings are merged (reciprocal rank fusion), and the best
+passages are added to the prompt as numbered sources. The reply
 lists them underneath (`Sources : [1] plan.docx § Séance 2`), keeping only those it cites
 when it cites any; they are saved with the conversation. `/prompt` shows the passages
 sent, `/context` what they cost, and the status bar shows the collection (`⌕ cours`),
@@ -146,9 +159,10 @@ run), or press `Ctrl+P` for the palette:
 | `/add <file>` | Attach a text file (≤ 256 KB) to the context; `Tab` completes the path |
 | `/clear` | Empty the context: messages stay on screen but are no longer sent |
 | `/compact` | Ask the model to summarize the history; the summary replaces it in the context |
-| `/index <folder> [name]` | Index a folder into a document collection (named after the folder by default); `Tab` completes the path, `Esc` stops |
+| `/index <folder> [name] [--types …]` | Index a folder into a document collection (named after the folder by default), or `/index <name>` to update one; `Tab` completes the path, `Esc` stops |
 | `/collections` | Indexed collections, and the result of the last `/index` |
 | `/rag [collection\|off]` | Answer from a collection of documents (per conversation), or stop |
+| `/forget <collection>` | Delete a collection's index (run twice to confirm); files are not touched |
 | `/help` | Commands and key bindings (`F1`) |
 | `/quit` | Quit (`Ctrl+C`) |
 

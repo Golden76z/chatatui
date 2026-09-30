@@ -30,8 +30,13 @@ pub struct RagConfig {
     pub top_k: usize,
     /// Token budget of the passages given per reply.
     pub context_tokens: u64,
-    /// Passages less similar to the question than this (cosine, 0–1) are left out.
+    /// Passages less similar to the question than this (cosine, 0–1) are left out,
+    /// unless they contain its keywords.
     pub min_score: f32,
+    /// Combine the similarity search with a keyword search (names, codes, rare terms).
+    pub keyword_search: bool,
+    /// Gitignore-style patterns never indexed (`*.min.js`, `node_modules/`, …).
+    pub exclude: Vec<String>,
 }
 
 impl Default for RagConfig {
@@ -43,6 +48,8 @@ impl Default for RagConfig {
             top_k: 5,
             context_tokens: 3_000,
             min_score: 0.3,
+            keyword_search: true,
+            exclude: Vec::new(),
         }
     }
 }

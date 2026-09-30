@@ -117,7 +117,7 @@ tests/      app_flow.rs http_clients.rs fixtures/*.sse
 | J9 ✅ | Acting on context: `/add <file>`, `/clear`, `/compact` |
 | J10 ✅ | RAG indexing: `/index <folder> [name]` (md, text, code, PDF, docx, odt), incremental, progress + Esc, `/collections` |
 | J11 ✅ | Retrieval: `/rag <collection>\|off` per conversation, top-k cosine within a token budget, sources under replies, shown in `/prompt` and `/context` |
-| J12 | Hybrid search (FTS5 + vectors), change detection at startup, file-type filters, deleting a collection |
+| J12 ✅ | Hybrid search (FTS5 + vectors), change detection at startup, file-type filters, deleting a collection |
 
 Each milestone ends with `cargo fmt`, `cargo clippy --all-targets -- -D warnings`,
 `cargo test` passing.
@@ -125,6 +125,9 @@ Each milestone ends with `cargo fmt`, `cargo clippy --all-targets -- -D warnings
 Out of scope for now: tool calling, themes.
 
 ## Next steps (ideas)
+
+- RAG: OCR for scanned PDFs; re-ranking with a cross-encoder; `/rag` over several
+  collections; automatic re-index of changed collections.
 
 - Delete / rename conversations; search in history.
 - Copy the last reply or a code block to the clipboard.

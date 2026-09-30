@@ -45,6 +45,8 @@ pub enum AppEvent {
     Models(Vec<ProviderModels>),
     /// Progress of the indexing job.
     Index(IndexEvent),
+    /// Result of [`crate::action::Effect::CheckCollections`].
+    CollectionsChecked(Result<Vec<crate::rag::indexer::Staleness>, String>),
     /// A file to attach was read.
     FileRead(Result<Attachment, String>),
     /// Completions of a partial path.

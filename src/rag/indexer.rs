@@ -33,13 +33,63 @@ const MAX_TEXT_BYTES: u64 = 2 * 1024 * 1024;
 /// Largest PDF / office document indexed.
 const MAX_DOCUMENT_BYTES: u64 = 50 * 1024 * 1024;
 
+/// Name of the ignore file read in indexed folders, on top of `.gitignore`.
+pub const IGNORE_FILE: &str = ".chatatuiignore";
+
 /// What to index.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct IndexRequest {
     /// Collection name.
     pub collection: String,
+    /// Folder to index. A bare collection name (`cours`) that is not a folder re-indexes
+    /// that collection's folder.
     pub root: PathBuf,
     pub chunk_tokens: usize,
+    /// File types to index: extensions, or `code` for every source file. `None` keeps
+    /// the collection's current choice; an empty list means every supported type.
+    pub types: Option<Vec<String>>,
+    /// Gitignore-style patterns left out (`[rag] exclude`).
+    pub exclude: Vec<String>,
+}
+
+/// Which files of a folder are indexed.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ScanFilter {
+    pub types: Vec<String>,
+    pub exclude: Vec<String>,
+}
+
+impl ScanFilter {
+    fn accepts(&self, path: &Path, kind: FileKind) -> bool {
+        if self.types.is_empty() {
+            return true;
+        }
+        let extension = path
+            .extension()
+            .map(|e| e.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+        self.types
+            .iter()
+            .any(|t| *t == extension || (t == "code" && kind == FileKind::Code))
+    }
+}
+
+/// How a collection's folder differs from its index.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Staleness {
+    pub collection: String,
+    pub added: usize,
+    pub modified: usize,
+    pub removed: usize,
+    /// The folder no longer exists.
+    pub missing_root: bool,
+}
+
+impl Staleness {
+    /// `true` when the index is not up to date.
+    pub fn is_stale(&self) -> bool {
+        self.missing_root || self.added + self.modified + self.removed > 0
+    }
 }
 
 /// Outcome of a completed run.
@@ -102,20 +152,34 @@ fn now() -> i64 {
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
 }
 
-/// Lists the supported files under `root`, following `.gitignore` rules.
-fn scan(root: &Path) -> Vec<Candidate> {
-    let mut files: Vec<Candidate> = ignore::WalkBuilder::new(root)
+/// Lists the supported files under `root` accepted by `filter`, following `.gitignore`
+/// and `.chatatuiignore` rules.
+fn scan(root: &Path, filter: &ScanFilter) -> Vec<Candidate> {
+    let mut walker = ignore::WalkBuilder::new(root);
+    walker
         .hidden(true)
         .git_ignore(true)
         .git_global(false)
         .require_git(false)
         .follow_links(false)
+        .add_custom_ignore_filename(IGNORE_FILE);
+    if !filter.exclude.is_empty() {
+        let mut overrides = ignore::overrides::OverrideBuilder::new(root);
+        for pattern in &filter.exclude {
+            // Invalid patterns are skipped rather than failing the whole run.
+            let _ = overrides.add(&format!("!{pattern}"));
+        }
+        if let Ok(overrides) = overrides.build() {
+            walker.overrides(overrides);
+        }
+    }
+    let mut files: Vec<Candidate> = walker
         .build()
         .filter_map(Result::ok)
         .filter(|entry| entry.file_type().is_some_and(|t| t.is_file()))
         .filter_map(|entry| {
             let path = entry.into_path();
-            let kind = FileKind::of(&path)?;
+            let kind = FileKind::of(&path).filter(|k| filter.accepts(&path, *k))?;
             let metadata = std::fs::metadata(&path).ok()?;
             let mtime = metadata
                 .modified()
@@ -140,6 +204,60 @@ fn scan(root: &Path) -> Vec<Candidate> {
         .collect();
     files.sort_by(|a, b| a.relative.cmp(&b.relative));
     files
+}
+
+/// The folder to index: `requested`, unless it is a bare collection name that is not a
+/// folder, in which case the existing collection's folder.
+fn resolve_root(
+    requested: &Path,
+    collection: &str,
+    existing: Option<&store::CollectionSource>,
+) -> PathBuf {
+    match existing {
+        Some(source) if !requested.is_dir() && requested == Path::new(collection) => {
+            PathBuf::from(&source.root)
+        }
+        _ => requested.to_path_buf(),
+    }
+}
+
+/// Compares every collection's folder with its index (blocking: walks the folders).
+pub fn check_collections(db_path: &Path, exclude: &[String]) -> Result<Vec<Staleness>, String> {
+    let conn = Store::open(db_path)
+        .map_err(|e| format!("base de données : {e}"))?
+        .into_connection();
+    let sources = store::collection_sources(&conn).map_err(|e| format!("base de données : {e}"))?;
+    let mut result = Vec::with_capacity(sources.len());
+    for source in sources {
+        let root = PathBuf::from(&source.root);
+        let mut staleness = Staleness {
+            collection: source.name.clone(),
+            ..Staleness::default()
+        };
+        if !root.is_dir() {
+            staleness.missing_root = true;
+            result.push(staleness);
+            continue;
+        }
+        let mut known =
+            store::documents(&conn, source.id).map_err(|e| format!("base de données : {e}"))?;
+        let filter = ScanFilter {
+            types: source.types.clone(),
+            exclude: exclude.to_vec(),
+        };
+        for candidate in scan(&root, &filter) {
+            match known.remove(&candidate.relative) {
+                None => staleness.added += 1,
+                Some(state) if state.size != candidate.size || state.mtime != candidate.mtime => {
+                    staleness.modified += 1;
+                }
+                Some(_) => {}
+            }
+        }
+        staleness.removed = known.len();
+        result.push(staleness);
+    }
+    Ok(result)
 }
 
 /// Runs `f` on a blocking thread with the database connection.
@@ -199,14 +317,9 @@ async fn index(
     embedder: &dyn Embedder,
     report: &(impl Fn(IndexEvent) + Send + Sync),
 ) -> Result<IndexReport, String> {
-    let root = request.root.clone();
-    if !root.is_dir() {
-        return Err(format!("{} n'est pas un dossier", root.display()));
-    }
     report(IndexEvent::Scanning {
         collection: request.collection.clone(),
     });
-
     let db = tokio::task::spawn_blocking(move || Store::open(&db_path).map(Store::into_connection))
         .await
         .map_err(|e| format!("tâche interrompue ({e})"))?
@@ -214,17 +327,38 @@ async fn index(
     let db = Arc::new(Mutex::new(db));
 
     let name = request.collection.clone();
+    let existing = with_db(&db, move |conn| store::collection_source(conn, &name)).await?;
+    let root = resolve_root(&request.root, &request.collection, existing.as_ref());
+    if !root.is_dir() {
+        return Err(format!("{} n'est pas un dossier", root.display()));
+    }
+    // Stored absolute, so that updates and checks work from any directory.
+    let root = root.canonicalize().unwrap_or(root);
+    let types = request
+        .types
+        .clone()
+        .or_else(|| existing.map(|e| e.types))
+        .unwrap_or_default();
+
+    let name = request.collection.clone();
     let root_text = root.to_string_lossy().into_owned();
     let model = embedder.model().to_owned();
+    let stored_types = types.clone();
     let (collection, reset): (Collection, bool) = with_db(&db, move |conn| {
-        store::open_collection(conn, &name, &root_text, &model, now())
+        let opened = store::open_collection(conn, &name, &root_text, &model, now())?;
+        store::set_types(conn, opened.0.id, &stored_types)?;
+        Ok(opened)
     })
     .await?;
     let collection_id = collection.id;
     let known = with_db(&db, move |conn| store::documents(conn, collection_id)).await?;
 
     let scan_root = root.clone();
-    let files = tokio::task::spawn_blocking(move || scan(&scan_root))
+    let filter = ScanFilter {
+        types,
+        exclude: request.exclude.clone(),
+    };
+    let files = tokio::task::spawn_blocking(move || scan(&scan_root, &filter))
         .await
         .map_err(|e| format!("tâche interrompue ({e})"))?;
 
@@ -245,9 +379,17 @@ async fn index(
             current: candidate.relative.clone(),
         });
         seen.insert(candidate.relative.clone());
-        let previous = known.get(&candidate.relative).copied();
-        if previous.is_some_and(|p| p.size == candidate.size && p.mtime == candidate.mtime) {
-            summary.unchanged += 1;
+        let previous = known.get(&candidate.relative).cloned();
+        if let Some(p) = &previous
+            && p.size == candidate.size
+            && p.mtime == candidate.mtime
+        {
+            match &p.skipped {
+                Some(reason) => summary
+                    .skipped
+                    .push((candidate.relative.clone(), reason.clone())),
+                None => summary.unchanged += 1,
+            }
             continue;
         }
 
@@ -261,19 +403,33 @@ async fn index(
         let (hash, passages) = match prepared {
             Ok(prepared) => prepared,
             Err(reason) => {
-                summary.skipped.push((candidate.relative.clone(), reason));
-                if let Some(previous) = previous {
-                    with_db(&db, move |conn| store::remove_document(conn, previous.id)).await?;
-                }
+                summary
+                    .skipped
+                    .push((candidate.relative.clone(), reason.clone()));
+                let relative = candidate.relative.clone();
+                let (size, mtime) = (candidate.size, candidate.mtime);
+                with_db(&db, move |conn| {
+                    store::write_skipped(
+                        conn,
+                        collection_id,
+                        &relative,
+                        size,
+                        mtime,
+                        &reason,
+                        now(),
+                    )
+                })
+                .await?;
                 continue;
             }
         };
-        if let Some(previous) = previous.filter(|p| p.hash == hash) {
+        if let Some(previous) = previous
+            .as_ref()
+            .filter(|p| p.hash == hash && p.skipped.is_none())
+        {
+            let id = previous.id;
             let mtime = candidate.mtime;
-            with_db(&db, move |conn| {
-                store::touch_document(conn, previous.id, mtime)
-            })
-            .await?;
+            with_db(&db, move |conn| store::touch_document(conn, id, mtime)).await?;
             summary.unchanged += 1;
             continue;
         }
@@ -383,6 +539,7 @@ mod tests {
                 collection: "docs".into(),
                 root: setup.root.clone(),
                 chunk_tokens: 800,
+                ..IndexRequest::default()
             },
             setup.db.clone(),
             embedder,
@@ -487,6 +644,7 @@ mod tests {
                 collection: "x".into(),
                 root: setup.root.join("nope"),
                 chunk_tokens: 800,
+                ..IndexRequest::default()
             },
             setup.db.clone(),
             Arc::new(HashEmbedder::default()),
@@ -499,7 +657,8 @@ mod tests {
             .unwrap_or_else(PoisonError::into_inner)
             .clone();
         assert!(
-            matches!(&events[..], [IndexEvent::Failed { error, .. }] if error.ends_with("n'est pas un dossier"))
+            matches!(&events[..], [IndexEvent::Scanning { .. }, IndexEvent::Failed { error, .. }]
+                if error.ends_with("n'est pas un dossier"))
         );
     }
 
@@ -515,6 +674,7 @@ mod tests {
                 collection: "docs".into(),
                 root: setup.root.clone(),
                 chunk_tokens: 800,
+                ..IndexRequest::default()
             },
             setup.db.clone(),
             Arc::new(HashEmbedder::default()),
@@ -557,6 +717,7 @@ mod tests {
                 collection: "docs".into(),
                 root: setup.root.clone(),
                 chunk_tokens: 800,
+                ..IndexRequest::default()
             },
             setup.db.clone(),
             Arc::new(Broken),
@@ -572,5 +733,138 @@ mod tests {
             events.last(),
             Some(IndexEvent::Failed { error, .. }) if error.contains("not found, try pulling it first")
         ));
+    }
+
+    async fn index_request(
+        setup: &Setup,
+        embedder: Arc<HashEmbedder>,
+        request: IndexRequest,
+    ) -> IndexReport {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink = events.clone();
+        run(
+            request,
+            setup.db.clone(),
+            embedder,
+            CancellationToken::new(),
+            move |e| sink.lock().unwrap_or_else(PoisonError::into_inner).push(e),
+        )
+        .await;
+        let events = events
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        finished(&events)
+    }
+
+    fn request(setup: &Setup) -> IndexRequest {
+        IndexRequest {
+            collection: "docs".into(),
+            root: setup.root.clone(),
+            chunk_tokens: 800,
+            ..IndexRequest::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn types_filter_is_kept_until_changed() {
+        let setup = setup();
+        let embedder = Arc::new(HashEmbedder::default());
+        let only_md = IndexRequest {
+            types: Some(vec!["md".into(), "code".into()]),
+            ..request(&setup)
+        };
+        let report = index_request(&setup, embedder.clone(), only_md).await;
+        assert_eq!(
+            (report.files, report.added),
+            (2, 2),
+            "notes.md + src/main.rs"
+        );
+
+        // Without --types, the collection keeps its filter.
+        let report = index_request(&setup, embedder.clone(), request(&setup)).await;
+        assert_eq!((report.files, report.unchanged), (2, 2));
+
+        // --types all: every type again.
+        let all = IndexRequest {
+            types: Some(Vec::new()),
+            ..request(&setup)
+        };
+        let report = index_request(&setup, embedder, all).await;
+        assert_eq!(report.files, 6);
+    }
+
+    #[tokio::test]
+    async fn excluded_patterns_and_chatatuiignore_are_left_out() {
+        let setup = setup();
+        fs::write(setup.root.join(IGNORE_FILE), "*.odt\n").expect("write");
+        let excluded = IndexRequest {
+            exclude: vec!["src/".into()],
+            ..request(&setup)
+        };
+        let report = index_request(&setup, Arc::new(HashEmbedder::default()), excluded).await;
+        let conn = Store::open(&setup.db).expect("db").into_connection();
+        let source = store::collection_source(&conn, "docs")
+            .expect("q")
+            .expect("exists");
+        let docs = store::documents(&conn, source.id).expect("docs");
+        let mut paths: Vec<&str> = docs.keys().map(String::as_str).collect();
+        paths.sort_unstable();
+        assert_eq!(
+            paths,
+            vec!["cours.pdf", "notes.md", "plan.docx", "scan.pdf"]
+        );
+        assert_eq!(report.files, 4);
+    }
+
+    #[tokio::test]
+    async fn skipped_files_are_not_retried_and_a_name_updates_the_collection() {
+        let setup = setup();
+        let embedder = Arc::new(HashEmbedder::default());
+        let first = index_request(&setup, embedder.clone(), request(&setup)).await;
+        assert_eq!(first.skipped.len(), 1);
+
+        // `/index docs`: the bare name finds the collection's folder.
+        let by_name = IndexRequest {
+            root: PathBuf::from("docs"),
+            ..request(&setup)
+        };
+        let calls = embedder.calls.load(Ordering::SeqCst);
+        let again = index_request(&setup, embedder.clone(), by_name).await;
+        assert_eq!(
+            again.skipped, first.skipped,
+            "still reported, with its reason"
+        );
+        assert_eq!(again.unchanged, first.added);
+        assert_eq!(
+            embedder.calls.load(Ordering::SeqCst),
+            calls,
+            "nothing embedded"
+        );
+    }
+
+    #[tokio::test]
+    async fn check_reports_what_changed_since_indexing() {
+        let setup = setup();
+        index_request(&setup, Arc::new(HashEmbedder::default()), request(&setup)).await;
+        let fresh = check_collections(&setup.db, &[]).expect("check");
+        assert_eq!(fresh.len(), 1);
+        assert!(!fresh[0].is_stale(), "{fresh:?}");
+
+        fs::write(
+            setup.root.join("notes.md"),
+            "# Notes\n\nNouveau contenu, plus long.\n",
+        )
+        .expect("write");
+        fs::write(setup.root.join("ajout.txt"), "nouveau").expect("write");
+        fs::remove_file(setup.root.join("plan.odt")).expect("remove");
+        let changed = check_collections(&setup.db, &[]).expect("check");
+        assert_eq!(
+            (changed[0].added, changed[0].modified, changed[0].removed),
+            (1, 1, 1)
+        );
+
+        fs::remove_dir_all(&setup.root).expect("remove");
+        assert!(check_collections(&setup.db, &[]).expect("check")[0].missing_root);
     }
 }

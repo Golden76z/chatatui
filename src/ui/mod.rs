@@ -384,7 +384,10 @@ mod tests {
         let effects = app.run_command(crate::commands::CommandId::Collections, "");
         assert_eq!(
             effects,
-            vec![Effect::Store(crate::storage::StoreRequest::ListCollections)]
+            vec![
+                Effect::Store(crate::storage::StoreRequest::ListCollections),
+                Effect::CheckCollections
+            ]
         );
         app.update(Action::Storage(StoreEvent::Collections {
             collections: vec![CollectionSummary {
@@ -394,9 +397,16 @@ mod tests {
                 documents: 42,
                 chunks: 1_318,
                 updated_at: 1_000,
+                types: vec!["pdf".into(), "md".into()],
             }],
             now: 1_000 + 2 * 3600,
         }));
+        app.stale = vec![crate::rag::indexer::Staleness {
+            collection: "rust".into(),
+            modified: 2,
+            ..Default::default()
+        }];
+        app.rag_collection = Some("rust".into());
         app.last_index = Some(IndexReport {
             collection: "rust".into(),
             files: 43,
@@ -418,7 +428,8 @@ mod tests {
             effects,
             vec![Effect::StartIndex {
                 collection: "rust".into(),
-                root: "~/cours/rust".into()
+                root: "~/cours/rust".into(),
+                types: None
             }]
         );
         app.update(Action::Index(IndexEvent::Progress {

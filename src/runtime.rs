@@ -52,6 +52,7 @@ struct RagBackend {
     embedder: Result<Arc<dyn Embedder>, String>,
     database: Result<PathBuf, String>,
     chunk_tokens: usize,
+    exclude: Vec<String>,
 }
 
 impl fmt::Debug for RagBackend {
@@ -93,6 +94,7 @@ impl RagBackend {
             embedder,
             database,
             chunk_tokens: rag.chunk_tokens,
+            exclude: rag.exclude.clone(),
         }
     }
 }
@@ -191,6 +193,9 @@ impl Runtime {
                 Some(Action::Llm { request_id, event })
             }
             Event::App(AppEvent::Storage(event)) => Some(Action::Storage(event)),
+            Event::App(AppEvent::CollectionsChecked(result)) => {
+                Some(Action::CollectionsChecked(result))
+            }
             Event::App(AppEvent::Index(event)) => {
                 if matches!(
                     event,
@@ -322,7 +327,23 @@ impl Runtime {
                     store.send(request);
                 }
             }
-            Effect::StartIndex { collection, root } => self.start_index(collection, &root),
+            Effect::StartIndex {
+                collection,
+                root,
+                types,
+            } => self.start_index(collection, &root, types),
+            Effect::CheckCollections => {
+                let Ok(database) = self.rag.database.clone() else {
+                    return;
+                };
+                let exclude = self.rag.exclude.clone();
+                let sender = self.events.sender();
+                tokio::task::spawn_blocking(move || {
+                    let result = indexer::check_collections(&database, &exclude);
+                    // Fails only while shutting down.
+                    let _ = sender.send(Event::App(AppEvent::CollectionsChecked(result)));
+                });
+            }
             Effect::CancelIndex => {
                 if let Some(token) = &self.running_index {
                     token.cancel();
@@ -343,7 +364,7 @@ impl Runtime {
 
 impl Runtime {
     /// Spawns the indexing job, or reports right away why it cannot run.
-    fn start_index(&mut self, collection: String, root: &str) {
+    fn start_index(&mut self, collection: String, root: &str, types: Option<Vec<String>>) {
         let sender = self.events.sender();
         let fail = |error: String| {
             // Fails only while shutting down.
@@ -363,14 +384,14 @@ impl Runtime {
             Ok(path) => path.clone(),
             Err(error) => return fail(error.clone()),
         };
+        // Not necessarily a folder: a collection name re-indexes that collection.
         let root = files::expand_home(root);
-        if !root.is_dir() {
-            return fail(format!("{} n'est pas un dossier", root.display()));
-        }
         let request = IndexRequest {
             collection: collection.clone(),
             root,
             chunk_tokens: self.rag.chunk_tokens,
+            types,
+            exclude: self.rag.exclude.clone(),
         };
         let token = CancellationToken::new();
         self.running_index = Some(token.clone());

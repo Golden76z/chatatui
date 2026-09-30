@@ -35,7 +35,7 @@ use crate::{
     prompt,
     rag::{
         RagConfig,
-        indexer::{IndexEvent, IndexReport},
+        indexer::{IndexEvent, IndexReport, Staleness},
         store::CollectionSummary,
     },
     state::{
@@ -57,6 +57,81 @@ fn path_argument(input: &str) -> Option<(&'static str, &str)> {
         .strip_prefix("/index ")
         .filter(|rest| !rest.contains(' '))
         .map(|rest| ("/index ", rest))
+}
+
+/// Splits `/index` arguments into the positional ones and the `--types` option
+/// (`Some(vec![])` for `--types all`).
+fn index_arguments(arg: &str) -> Result<(Vec<String>, Option<Vec<String>>), String> {
+    let mut positional = Vec::new();
+    let mut types = None;
+    let mut words = commands::split_args(arg).into_iter();
+    while let Some(word) = words.next() {
+        let value = if let Some(value) = word.strip_prefix("--types=") {
+            value.to_owned()
+        } else if word == "--types" {
+            words
+                .next()
+                .ok_or_else(|| "--types attend une liste : --types pdf,md,docx".to_owned())?
+        } else if word.starts_with("--") {
+            return Err(format!("option inconnue : {word} (seule --types existe)"));
+        } else {
+            positional.push(word);
+            continue;
+        };
+        types = Some(parse_types(&value)?);
+    }
+    Ok((positional, types))
+}
+
+/// `pdf, .MD,word` → `["pdf", "md", "docx"]`; `all` → every type.
+fn parse_types(value: &str) -> Result<Vec<String>, String> {
+    let mut types = Vec::new();
+    for raw in value.split(',').map(str::trim).filter(|t| !t.is_empty()) {
+        let lower = raw.trim_start_matches('.').to_lowercase();
+        let normalized = match lower.as_str() {
+            "all" | "tout" | "tous" => return Ok(Vec::new()),
+            "markdown" => "md".to_owned(),
+            "word" => "docx".to_owned(),
+            "libreoffice" | "writer" => "odt".to_owned(),
+            "texte" | "text" => "txt".to_owned(),
+            other => other.to_owned(),
+        };
+        let supported = normalized == "code"
+            || crate::rag::extract::FileKind::of(std::path::Path::new(&format!("f.{normalized}")))
+                .is_some();
+        if !supported {
+            return Err(format!(
+                "type non pris en charge : {raw} (ex. : pdf, md, txt, docx, odt, code, rs)"
+            ));
+        }
+        if !types.contains(&normalized) {
+            types.push(normalized);
+        }
+    }
+    if types.is_empty() {
+        return Err("--types attend une liste : --types pdf,md,docx".into());
+    }
+    Ok(types)
+}
+
+/// `2 fichiers modifiés, 1 nouveau` (or that the folder is gone).
+pub fn staleness_summary(staleness: &Staleness) -> String {
+    if staleness.missing_root {
+        return "dossier introuvable".into();
+    }
+    let mut parts = Vec::new();
+    for (count, one, many) in [
+        (staleness.added, "nouveau fichier", "nouveaux fichiers"),
+        (staleness.modified, "fichier modifié", "fichiers modifiés"),
+        (staleness.removed, "fichier supprimé", "fichiers supprimés"),
+    ] {
+        match count {
+            0 => {}
+            1 => parts.push(format!("1 {one}")),
+            n => parts.push(format!("{n} {many}")),
+        }
+    }
+    parts.join(", ")
 }
 
 /// One-line outcome of an indexing run.
@@ -221,6 +296,12 @@ pub struct App {
     pending_rag: Option<String>,
     /// Passages retrieved for the last reply of this conversation.
     pub retrieved: Option<Retrieved>,
+    /// Collections whose folder changed since they were indexed.
+    pub stale: Vec<Staleness>,
+    /// `true` once the collections were checked (the first check is announced).
+    collections_checked: bool,
+    /// Collection `/forget` asked to delete, waiting for the command to be confirmed.
+    pending_forget: Option<String>,
     /// Token counts of the last completed request of this conversation.
     pub measured: Option<Measured>,
     /// Token counts received for the running request.
@@ -278,6 +359,9 @@ impl App {
             rag_collection: None,
             pending_rag: None,
             retrieved: None,
+            stale: Vec::new(),
+            collections_checked: false,
+            pending_forget: None,
             request_usage: Usage::default(),
             session_seed: 0,
             next_conversation: 0,
@@ -480,6 +564,7 @@ impl App {
             }
             // Esc closes the topmost popup or panel first.
             Action::Cancel => {
+                self.pending_forget = None;
                 if self.overlay.take().is_some() || self.sidebar.take().is_some() {
                     Vec::new()
                 } else if self.is_generating() {
@@ -698,7 +783,15 @@ impl App {
                 Vec::new()
             }
             Action::Tick => Vec::new(),
-            Action::Init => self.detect_window(),
+            Action::Init => {
+                let mut effects = self.detect_window();
+                effects.push(Effect::CheckCollections);
+                effects
+            }
+            Action::CollectionsChecked(result) => {
+                self.on_collections_checked(result);
+                Vec::new()
+            }
             Action::ContextWindowDetected {
                 provider,
                 model,
@@ -750,6 +843,10 @@ impl App {
 
     /// Executes a user command.
     pub fn run_command(&mut self, id: CommandId, arg: &str) -> Vec<Effect> {
+        // A `/forget` is confirmed only by running it again right away.
+        if id != CommandId::Forget {
+            self.pending_forget = None;
+        }
         match id {
             CommandId::New => self.new_conversation(),
             CommandId::History => {
@@ -782,9 +879,12 @@ impl App {
             CommandId::Compact => self.compact(),
             CommandId::Index => self.start_index(arg),
             CommandId::Rag => self.choose_rag(arg.trim()),
+            CommandId::Forget => self.forget(arg.trim()),
             CommandId::Collections => {
                 self.overlay = Some(Overlay::Collections { scroll: 0 });
-                self.refresh_collections()
+                let mut effects = self.refresh_collections();
+                effects.push(Effect::CheckCollections);
+                effects
             }
             CommandId::Quit => self.apply(Action::Quit),
         }
@@ -881,6 +981,7 @@ impl App {
 
     /// Sends `text` as a user message and starts the reply.
     fn send_message(&mut self, text: &str) -> Vec<Effect> {
+        self.pending_forget = None;
         if self.is_generating() {
             return Vec::new();
         }
@@ -960,7 +1061,13 @@ impl App {
             ));
             return Vec::new();
         }
-        let args = commands::split_args(arg);
+        let (args, types) = match index_arguments(arg) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                self.status = Status::Error(error);
+                return Vec::new();
+            }
+        };
         let (root, name) = match args.as_slice() {
             [root] => {
                 let trimmed = root.trim_end_matches('/');
@@ -971,7 +1078,9 @@ impl App {
             }
             [root, name] => (root.clone(), name.clone()),
             _ => {
-                self.status = Status::Error("usage : /index <dossier> [nom]".into());
+                self.status = Status::Error(
+                    "usage : /index <dossier|collection> [nom] [--types pdf,md,…]".into(),
+                );
                 return Vec::new();
             }
         };
@@ -988,6 +1097,7 @@ impl App {
         vec![Effect::StartIndex {
             collection: name,
             root,
+            types,
         }]
     }
 
@@ -1016,6 +1126,7 @@ impl App {
             }
             IndexEvent::Finished(report) => {
                 self.indexing = None;
+                self.stale.retain(|s| s.collection != report.collection);
                 self.status = Status::Info(index_summary(&report));
                 self.last_index = Some(report);
                 self.refresh_collections()
@@ -1101,6 +1212,58 @@ impl App {
                 collection,
             })],
             None => Vec::new(),
+        }
+    }
+
+    /// `/forget <collection>`: deletes a collection's index, once confirmed by running the
+    /// same command again.
+    fn forget(&mut self, name: &str) -> Vec<Effect> {
+        if name.is_empty() {
+            self.status = Status::Error("usage : /forget <collection>".into());
+            return Vec::new();
+        }
+        if self.indexing.as_ref().is_some_and(|p| p.collection == name) {
+            self.status = Status::Error(format!(
+                "« {name} » est en cours d'indexation (Échap pour l'arrêter)"
+            ));
+            return Vec::new();
+        }
+        if self.pending_forget.as_deref() == Some(name) {
+            self.pending_forget = None;
+            return vec![Effect::Store(StoreRequest::DeleteCollection(
+                name.to_owned(),
+            ))];
+        }
+        self.pending_forget = Some(name.to_owned());
+        self.set_input(&format!("/forget {name}"));
+        self.status = Status::Info(format!(
+            "Entrée pour confirmer : l'index de « {name} » sera supprimé (pas vos fichiers)"
+        ));
+        Vec::new()
+    }
+
+    fn on_collections_checked(&mut self, result: Result<Vec<Staleness>, String>) {
+        // A failed check is not worth an error: indexing reports real problems.
+        let Ok(checked) = result else {
+            return;
+        };
+        self.stale = checked.into_iter().filter(Staleness::is_stale).collect();
+        let first = !self.collections_checked;
+        self.collections_checked = true;
+        if first && matches!(self.status, Status::Ready) {
+            if let [only] = self.stale.as_slice() {
+                self.status = Status::Info(format!(
+                    "« {} » : {} (/index {} pour mettre à jour)",
+                    only.collection,
+                    staleness_summary(only),
+                    only.collection
+                ));
+            } else if !self.stale.is_empty() {
+                self.status = Status::Info(format!(
+                    "{} collections ont changé depuis leur indexation (/collections)",
+                    self.stale.len()
+                ));
+            }
         }
     }
 
@@ -1355,6 +1518,29 @@ impl App {
                 Vec::new()
             }
             StoreEvent::Loaded(stored) => self.load(stored),
+            StoreEvent::CollectionDeleted { name, found } => {
+                if !found {
+                    self.status = Status::Error(format!("collection « {name} » introuvable"));
+                    return Vec::new();
+                }
+                self.status = Status::Info(format!(
+                    "« {name} » supprimée de l'index (vos fichiers ne sont pas touchés)"
+                ));
+                self.stale.retain(|s| s.collection != name);
+                if self
+                    .last_index
+                    .as_ref()
+                    .is_some_and(|r| r.collection == name)
+                {
+                    self.last_index = None;
+                }
+                // The database already cleared it from the stored conversations.
+                if self.rag_collection.as_deref() == Some(name.as_str()) {
+                    self.rag_collection = None;
+                    self.retrieved = None;
+                }
+                vec![Effect::Store(StoreRequest::ListCollections)]
+            }
             StoreEvent::Collections { collections, now } => {
                 let effects = match self.pending_rag.take() {
                     Some(name) => self.apply_rag(&name, &collections),
@@ -2520,10 +2706,13 @@ mod tests {
         assert!(app.context_window().is_none());
         assert_eq!(
             app.update(Action::Init),
-            vec![Effect::DetectContextWindow {
-                provider: "ollama".into(),
-                model: "llama3.2".into()
-            }]
+            vec![
+                Effect::DetectContextWindow {
+                    provider: "ollama".into(),
+                    model: "llama3.2".into()
+                },
+                Effect::CheckCollections
+            ]
         );
         app.update(Action::ContextWindowDetected {
             provider: "ollama".into(),
@@ -2531,7 +2720,11 @@ mod tests {
             tokens: Some(4_096),
         });
         assert_eq!(app.context_window(), Some((4_096, WindowSource::Server)));
-        assert!(app.update(Action::Init).is_empty(), "already known");
+        assert_eq!(
+            app.update(Action::Init),
+            vec![Effect::CheckCollections],
+            "window already known"
+        );
 
         let mut config = Config::default();
         if let Some(ollama) = config.providers.get_mut("ollama") {
@@ -2702,7 +2895,7 @@ mod tests {
         assert!(app.run_command(CommandId::Index, "").is_empty());
         assert_eq!(
             app.status,
-            Status::Error("usage : /index <dossier> [nom]".into())
+            Status::Error("usage : /index <dossier|collection> [nom] [--types pdf,md,…]".into())
         );
         assert!(app.run_command(CommandId::Index, "a b c").is_empty());
         assert!(app.run_command(CommandId::Index, "/").is_empty());
@@ -2712,7 +2905,8 @@ mod tests {
             effects,
             vec![Effect::StartIndex {
                 collection: "rust".into(),
-                root: "~/Mes cours/".into()
+                root: "~/Mes cours/".into(),
+                types: None
             }]
         );
     }
@@ -2725,6 +2919,7 @@ mod tests {
             documents: 3,
             chunks: 12,
             updated_at: 0,
+            types: Vec::new(),
         }
     }
 
@@ -2853,5 +3048,109 @@ mod tests {
             Some("rust"),
             "kept for a new conversation"
         );
+    }
+
+    #[test]
+    fn index_types_option() {
+        assert_eq!(
+            index_arguments("~/cours rust --types pdf,.MD,word"),
+            Ok((
+                vec!["~/cours".to_owned(), "rust".to_owned()],
+                Some(vec!["pdf".to_owned(), "md".to_owned(), "docx".to_owned()])
+            ))
+        );
+        assert_eq!(
+            index_arguments("rust --types=all"),
+            Ok((vec!["rust".to_owned()], Some(Vec::new())))
+        );
+        assert_eq!(index_arguments("~/c").map(|a| a.1), Ok(None));
+        assert!(index_arguments("~/c --types").is_err());
+        assert!(index_arguments("~/c --types exe").is_err());
+        assert!(index_arguments("~/c --force").is_err());
+
+        let mut app = app();
+        let effects = app.run_command(CommandId::Index, "~/cours --types code");
+        assert_eq!(
+            effects,
+            vec![Effect::StartIndex {
+                collection: "cours".into(),
+                root: "~/cours".into(),
+                types: Some(vec!["code".into()])
+            }]
+        );
+    }
+
+    #[test]
+    fn forget_asks_for_confirmation_then_turns_rag_off() {
+        let mut app = app();
+        app.rag_collection = Some("cours".into());
+        assert!(app.run_command(CommandId::Forget, "cours").is_empty());
+        assert_eq!(
+            app.input_text(),
+            "/forget cours",
+            "ready to confirm with Enter"
+        );
+        // Anything else in between cancels the confirmation.
+        app.run_command(CommandId::Help, "");
+        assert!(app.run_command(CommandId::Forget, "cours").is_empty());
+        assert_eq!(
+            app.update(Action::Submit),
+            vec![Effect::Store(StoreRequest::DeleteCollection(
+                "cours".into()
+            ))]
+        );
+        let effects = app.update(Action::Storage(StoreEvent::CollectionDeleted {
+            name: "cours".into(),
+            found: true,
+        }));
+        assert_eq!(effects, vec![Effect::Store(StoreRequest::ListCollections)]);
+        assert_eq!(app.rag_collection, None);
+        assert!(
+            matches!(&app.status, Status::Info(m) if m.contains("vos fichiers ne sont pas touchés"))
+        );
+    }
+
+    #[test]
+    fn changed_collections_are_announced_once_at_startup() {
+        let stale = |name: &str, modified: usize| Staleness {
+            collection: name.into(),
+            modified,
+            added: 1,
+            ..Staleness::default()
+        };
+        let mut app = app();
+        app.update(Action::CollectionsChecked(Ok(vec![
+            stale("cours", 2),
+            Staleness {
+                collection: "ok".into(),
+                ..Staleness::default()
+            },
+        ])));
+        assert_eq!(
+            app.status,
+            Status::Info(
+                "« cours » : 1 nouveau fichier, 2 fichiers modifiés (/index cours pour mettre à jour)"
+                    .into()
+            )
+        );
+        assert_eq!(app.stale.len(), 1, "up-to-date collections are not listed");
+
+        app.status = Status::Ready;
+        app.update(Action::CollectionsChecked(Ok(vec![
+            stale("cours", 1),
+            stale("tp", 1),
+        ])));
+        assert_eq!(
+            app.status,
+            Status::Ready,
+            "only the first check is announced"
+        );
+        assert_eq!(app.stale.len(), 2);
+
+        app.update(Action::Index(IndexEvent::Finished(IndexReport {
+            collection: "cours".into(),
+            ..IndexReport::default()
+        })));
+        assert_eq!(app.stale.len(), 1, "re-indexed");
     }
 }

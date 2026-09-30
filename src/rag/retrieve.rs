@@ -1,10 +1,15 @@
 //! Retrieval: the [`ContextProvider`] that searches the conversation's collection.
 //!
 //! The question (plus the previous one when it is short, for follow-ups such as « et la
-//! deuxième ? ») is embedded with the collection's model and compared to every passage
-//! (cosine similarity; vectors are unit length, so a dot product). The best passages above
-//! `min_score` are kept, within `top_k` and a token budget. Passages are loaded from the
-//! database once and kept until the collection changes.
+//! deuxième ? ») is searched two ways:
+//! - by meaning: embedded with the collection's model and compared to every passage
+//!   (cosine similarity; vectors are unit length, so a dot product);
+//! - by keywords: its words in the FTS5 index (BM25), which catches names, codes and rare
+//!   terms that embeddings blur.
+//!
+//! Both rankings are merged by reciprocal rank fusion. Passages below `min_score` that
+//! match no keyword are dropped, then the best are kept within `top_k` and a token budget.
+//! Passages are loaded from the database once and kept until the collection changes.
 
 use std::{
     path::PathBuf,
@@ -27,6 +32,18 @@ use crate::{
 
 /// Below this many words, the previous question is added to the search.
 const SHORT_QUESTION_WORDS: usize = 6;
+/// Candidates taken from each ranking before fusion.
+const CANDIDATES: usize = 50;
+/// Reciprocal rank fusion constant (the usual value).
+const RRF_K: f32 = 60.0;
+/// Words ignored by the keyword search.
+const STOP_WORDS: &[&str] = &[
+    "les", "des", "une", "est", "que", "qui", "quoi", "dans", "pour", "par", "sur", "avec", "sans",
+    "pas", "plus", "mais", "ont", "sont", "elle", "ils", "elles", "nous", "vous", "leur", "leurs",
+    "cette", "ces", "son", "ses", "aux", "comment", "quel", "quelle", "quels", "quelles", "dit",
+    "fait", "faire", "peux", "peut", "tu", "moi", "the", "and", "for", "with", "what", "which",
+    "how", "does", "this", "that", "are", "from", "about",
+];
 
 /// How many passages are kept and how much of the prompt they may use.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -34,6 +51,7 @@ pub struct Selection {
     pub top_k: usize,
     pub context_tokens: u64,
     pub min_score: f32,
+    pub keywords: bool,
 }
 
 impl From<&RagConfig> for Selection {
@@ -42,6 +60,7 @@ impl From<&RagConfig> for Selection {
             top_k: config.top_k,
             context_tokens: config.context_tokens,
             min_score: config.min_score,
+            keywords: config.keyword_search,
         }
     }
 }
@@ -85,6 +104,26 @@ impl RagContext {
             selection,
             cache: Mutex::new(None),
         }
+    }
+
+    /// Ids of the passages matching the question's keywords, best first.
+    async fn keyword_hits(
+        &self,
+        collection: &str,
+        question: &str,
+    ) -> Result<Vec<i64>, ContextError> {
+        let Some(query) = fts_query(question) else {
+            return Ok(Vec::new());
+        };
+        let database = self.database.clone().map_err(ContextError)?;
+        let name = collection.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let conn = Store::open(&database)?.into_connection();
+            store::keyword_search(&conn, &name, &query, CANDIDATES)
+        })
+        .await
+        .map_err(|e| ContextError(format!("recherche interrompue ({e})")))?
+        .map_err(|e| ContextError(format!("index : {e}")))
     }
 
     /// Passages of `collection` and its embedding model, from the cache when unchanged.
@@ -152,13 +191,18 @@ impl ContextProvider for RagContext {
             )));
         }
         let vector = embedder
-            .embed(&[question])
+            .embed(std::slice::from_ref(&question))
             .await
             .map_err(|e| ContextError(format!("embeddings : {e}")))?
             .pop()
             .ok_or_else(|| ContextError("embeddings : réponse vide".into()))?;
+        let keyword_hits = if self.selection.keywords {
+            self.keyword_hits(collection, &question).await?
+        } else {
+            Vec::new()
+        };
         Ok(Context {
-            chunks: select(&chunks, &vector, self.selection),
+            chunks: select(&chunks, &vector, &keyword_hits, self.selection),
         })
     }
 }
@@ -181,19 +225,81 @@ pub fn search_text(history: &[Message]) -> String {
     }
 }
 
-/// The passages most similar to `query`, best first.
-pub fn select(chunks: &[StoredChunk], query: &[f32], selection: Selection) -> Vec<ContextChunk> {
-    let mut scored: Vec<(f32, &StoredChunk)> = chunks
+/// FTS5 query for the question's words: each quoted, as a prefix, joined by `OR`
+/// (a final `s` is dropped so that plurals match). `None` when no word is left.
+pub fn fts_query(question: &str) -> Option<String> {
+    let mut words: Vec<String> = Vec::new();
+    // Short words count only when they look like a code or an acronym (`42`, `XK`).
+    let meaningful = |w: &&str| {
+        let length = w.chars().count();
+        length >= 3
+            || (length == 2
+                && (w.chars().any(|c| c.is_ascii_digit()) || w.chars().all(char::is_uppercase)))
+    };
+    for word in question
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(meaningful)
+        .map(str::to_lowercase)
+        .filter(|w| !STOP_WORDS.contains(&w.as_str()))
+    {
+        let word = match word.strip_suffix('s') {
+            Some(stem) if stem.chars().count() >= 4 => stem.to_owned(),
+            _ => word,
+        };
+        if !words.contains(&word) {
+            words.push(word);
+        }
+    }
+    if words.is_empty() {
+        return None;
+    }
+    Some(
+        words
+            .iter()
+            .map(|w| format!("\"{w}\"*"))
+            .collect::<Vec<_>>()
+            .join(" OR "),
+    )
+}
+
+/// The best passages for the question: `query` is its vector, `keyword_hits` the ids of
+/// the passages matching its words (best first).
+pub fn select(
+    chunks: &[StoredChunk],
+    query: &[f32],
+    keyword_hits: &[i64],
+    selection: Selection,
+) -> Vec<ContextChunk> {
+    let mut by_meaning: Vec<(f32, &StoredChunk)> = chunks
         .iter()
         .filter(|c| c.vector.len() == query.len())
         .map(|c| (dot(&c.vector, query), c))
-        .filter(|(score, _)| *score >= selection.min_score)
         .collect();
-    scored.sort_by(|a, b| b.0.total_cmp(&a.0));
+    by_meaning.sort_by(|a, b| b.0.total_cmp(&a.0));
+
+    // Reciprocal rank fusion of the two rankings.
+    let mut fused: Vec<(f32, &StoredChunk)> = Vec::new();
+    let keyword_rank = |id: i64| keyword_hits.iter().take(CANDIDATES).position(|k| *k == id);
+    for (rank, (score, chunk)) in by_meaning.iter().enumerate() {
+        let keyword = keyword_rank(chunk.id);
+        let in_meaning = rank < CANDIDATES && *score >= selection.min_score;
+        if !in_meaning && keyword.is_none() {
+            continue;
+        }
+        let mut fusion = 0.0;
+        if in_meaning {
+            fusion += 1.0 / (RRF_K + rank as f32 + 1.0);
+        }
+        if let Some(position) = keyword {
+            fusion += 1.0 / (RRF_K + position as f32 + 1.0);
+        }
+        fused.push((fusion, chunk));
+    }
+    fused.sort_by(|a, b| b.0.total_cmp(&a.0));
 
     let mut picked: Vec<ContextChunk> = Vec::new();
     let mut used = 0;
-    for (_, chunk) in scored {
+    for (_, chunk) in fused {
         if picked.len() >= selection.top_k {
             break;
         }
@@ -235,10 +341,12 @@ mod tests {
         top_k: 3,
         context_tokens: 10_000,
         min_score: 0.0,
+        keywords: true,
     };
 
     fn chunk(path: &str, text: &str) -> StoredChunk {
         StoredChunk {
+            id: i64::from(path.as_bytes()[0]),
             path: path.into(),
             location: "L1-2".into(),
             text: text.into(),
@@ -255,7 +363,7 @@ mod tests {
             chunk("d.md", "ownership emprunt références"),
         ];
         let query = hash_vector("ownership emprunt références");
-        let picked = select(&chunks, &query, WIDE);
+        let picked = select(&chunks, &query, &[], WIDE);
         let sources: Vec<&str> = picked.iter().map(|c| c.source.as_str()).collect();
         assert_eq!(
             sources[0], "c.md",
@@ -270,7 +378,7 @@ mod tests {
             ..WIDE
         };
         assert!(
-            select(&chunks, &query, strict)
+            select(&chunks, &query, &[], strict)
                 .iter()
                 .all(|c| c.source != "a.md"),
             "unrelated passages are left out"
@@ -279,7 +387,42 @@ mod tests {
             context_tokens: tokens::estimate("ownership emprunt références"),
             ..WIDE
         };
-        assert_eq!(select(&chunks, &query, tight).len(), 1, "token budget");
+        assert_eq!(select(&chunks, &query, &[], tight).len(), 1, "token budget");
+    }
+
+    #[test]
+    fn keyword_hits_rescue_passages_the_vectors_miss() {
+        let chunks = vec![
+            chunk("a.md", "ownership emprunt références"),
+            chunk("b.md", "le module XK-42 gère les tickets"),
+        ];
+        let query = hash_vector("ownership emprunt références");
+        let strict = Selection {
+            min_score: 0.9,
+            ..WIDE
+        };
+        let sources = |picked: Vec<ContextChunk>| -> Vec<String> {
+            picked.into_iter().map(|c| c.source).collect()
+        };
+        assert_eq!(sources(select(&chunks, &query, &[], strict)), vec!["a.md"]);
+        // b.md matches a keyword: kept despite its low similarity.
+        let b = i64::from(b'b');
+        assert_eq!(
+            sources(select(&chunks, &query, &[b], strict)),
+            vec!["a.md", "b.md"]
+        );
+        // Ranked first by both searches wins over first by one.
+        let hits = [b, i64::from(b'a')];
+        assert_eq!(sources(select(&chunks, &query, &hits, WIDE))[0], "a.md");
+    }
+
+    #[test]
+    fn fts_query_keeps_meaningful_words() {
+        assert_eq!(
+            fts_query("Que dit le cours sur les traits et XK-42 ?").as_deref(),
+            Some("\"cour\"* OR \"trait\"* OR \"xk\"* OR \"42\"*")
+        );
+        assert_eq!(fts_query("et le ?"), None);
     }
 
     #[test]
@@ -332,6 +475,7 @@ mod tests {
                 collection: "cours".into(),
                 root: docs,
                 chunk_tokens: 200,
+                ..IndexRequest::default()
             },
             db.clone(),
             Arc::new(HashEmbedder::default()),
