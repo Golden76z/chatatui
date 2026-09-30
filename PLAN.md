@@ -120,6 +120,7 @@ tests/      app_flow.rs http_clients.rs fixtures/*.sse
 | J12 ✅ | Hybrid search (FTS5 + vectors), change detection at startup, file-type filters, deleting a collection |
 | J13 ✅ | Conversations: full-text search in the list (FTS5 over messages, excerpts), rename (Ctrl+R, `/rename`), delete (Suppr, `/delete`) |
 | J14 ✅ | Clipboard: `/copy [code [n]]`, Ctrl+Y; system tool (wl-copy, xclip, xsel, pbcopy) plus OSC 52; numbered code blocks |
+| J15 ✅ | Nearly full context: `/compact` suggested past `compact_threshold` (90 %); `auto_compact` summarizes before sending the next message (given back on failure) |
 
 Each milestone ends with `cargo fmt`, `cargo clippy --all-targets -- -D warnings`,
 `cargo test` passing.
@@ -131,4 +132,3 @@ Out of scope for now: tool calling, themes.
 - RAG: OCR for scanned PDFs; re-ranking with a cross-encoder; `/rag` over several
   collections; automatic re-index of changed collections.
 
-- Automatic `/compact` suggestion (or trigger) when the gauge passes 90 %.

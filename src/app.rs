@@ -307,6 +307,12 @@ pub struct App {
     pub stale: Vec<Staleness>,
     /// `true` once the collections were checked (the first check is announced).
     collections_checked: bool,
+    /// Context fill (percent) from which `/compact` is suggested (0: never).
+    pub compact_threshold: u8,
+    /// Summarize the history before sending once past `compact_threshold`.
+    pub auto_compact: bool,
+    /// Message to send once the automatic `/compact` running for it is done.
+    queued: Option<String>,
     /// Deletion waiting for its command to be run again (`/forget`, `/delete`).
     pending_confirm: Option<Confirm>,
     /// Token counts of the last completed request of this conversation.
@@ -369,6 +375,9 @@ impl App {
             stale: Vec::new(),
             collections_checked: false,
             pending_confirm: None,
+            compact_threshold: config.compact_threshold,
+            auto_compact: config.auto_compact,
+            queued: None,
             request_usage: Usage::default(),
             session_seed: 0,
             next_conversation: 0,
@@ -450,6 +459,31 @@ impl App {
                 measured: false,
             },
         }
+    }
+
+    /// How full the context is, in percent of the window (`None` when the window is
+    /// unknown).
+    pub fn context_percent(&self) -> Option<u64> {
+        let (window, _) = self.context_window()?;
+        Some(tokens::percent(self.context_usage().tokens, window))
+    }
+
+    /// `true` when the context passed the `/compact` threshold.
+    fn context_nearly_full(&self) -> bool {
+        self.compact_threshold > 0
+            && self
+                .context_percent()
+                .is_some_and(|p| p >= u64::from(self.compact_threshold))
+    }
+
+    /// Messages `/compact` would summarize (at least a question and its answer).
+    fn compactable(&self) -> bool {
+        self.conversation
+            .context_messages()
+            .iter()
+            .filter(|m| matches!(m.role, Role::User | Role::Assistant))
+            .count()
+            >= 2
     }
 
     /// Asks the server for the current model's window, unless already known.
@@ -1050,6 +1084,21 @@ impl App {
             ));
             return Vec::new();
         }
+        if self.auto_compact && self.context_nearly_full() && self.compactable() {
+            // Summarize first; the message goes out once the summary is in.
+            self.queued = Some(text.trim_end().to_owned());
+            self.input = new_input();
+            let effect = self.start_job(JobKind::Summary, Role::Summary);
+            self.status = Status::Info(
+                "contexte presque plein : résumé de l'historique avant l'envoi…".into(),
+            );
+            return vec![effect];
+        }
+        self.send_now(text)
+    }
+
+    /// Sends `text` as the next user message.
+    fn send_now(&mut self, text: &str) -> Vec<Effect> {
         let text = text.trim_end();
         if self.conversation_title.is_none() {
             self.conversation_title = Some(title_from(text));
@@ -1642,7 +1691,18 @@ impl App {
         let mut effects = vec![Effect::CancelCompletion(generation.request_id)];
         effects.extend(self.finish_generation(MessageStatus::Cancelled));
         self.status = Status::Ready;
+        self.restore_queued("résumé annulé");
         effects
+    }
+
+    /// Puts back in the input the message an automatic `/compact` was waiting to send.
+    fn restore_queued(&mut self, reason: &str) {
+        if let Some(text) = self.queued.take() {
+            self.set_input(&text);
+            self.status = Status::Error(format!(
+                "{reason} : message non envoyé (il est dans la zone de saisie)"
+            ));
+        }
     }
 
     /// Clears the running generation, sets the final status of its message and saves it.
@@ -1708,6 +1768,9 @@ impl App {
                     .into_iter()
                     .collect();
                 effects.extend(self.move_context_start(generation.message_id.0));
+                if let Some(text) = self.queued.take() {
+                    effects.extend(self.send_now(&text));
+                }
                 effects
             }
             LlmEvent::Done => {
@@ -1722,6 +1785,20 @@ impl App {
                 if let Some(message) = self.conversation.get_mut(generation.message_id) {
                     keep_cited(message);
                 }
+                if self.context_nearly_full() {
+                    let percent = self.context_percent().unwrap_or_default();
+                    self.status = Status::Info(if self.auto_compact {
+                        format!(
+                            "contexte rempli à {percent} % : il sera résumé avant votre \
+                             prochain message"
+                        )
+                    } else {
+                        format!(
+                            "contexte rempli à {percent} % : /compact le résume, /clear \
+                             repart de zéro"
+                        )
+                    });
+                }
                 let mut effects: Vec<Effect> = self
                     .finish_generation(MessageStatus::Complete)
                     .into_iter()
@@ -1732,6 +1809,7 @@ impl App {
             }
             LlmEvent::Error(error) => {
                 self.status = Status::Error(error.clone());
+                self.restore_queued(&error);
                 self.finish_generation(MessageStatus::Failed(error))
                     .into_iter()
                     .collect()
@@ -3596,5 +3674,112 @@ mod tests {
             app.status,
             Status::Info("copié : bloc de code #1 (10 caractères, via wl-copy)".into())
         );
+    }
+
+    /// An app whose model has an 8k window (from the configuration).
+    fn small_window_app(auto_compact: bool) -> App {
+        let mut config = Config {
+            auto_compact,
+            ..Config::default()
+        };
+        if let Some(ollama) = config.providers.get_mut("ollama") {
+            ollama.context_window = Some(8_000);
+        }
+        App::new(&config, false)
+    }
+
+    fn fill(app: &mut App, input_tokens: u64) {
+        let job = send(app, "Question");
+        token(app, job.request_id, "Réponse");
+        llm(
+            app,
+            job.request_id,
+            LlmEvent::Usage(Usage {
+                input_tokens: Some(input_tokens),
+                output_tokens: Some(10),
+            }),
+        );
+        llm(app, job.request_id, LlmEvent::Done);
+    }
+
+    #[test]
+    fn a_nearly_full_context_suggests_compact() {
+        let mut app = small_window_app(false);
+        fill(&mut app, 1_000);
+        assert_eq!(app.status, Status::Ready);
+        fill(&mut app, 7_400);
+        assert_eq!(
+            app.status,
+            Status::Info(
+                "contexte rempli à 92 % : /compact le résume, /clear repart de zéro".into()
+            )
+        );
+        // Without auto_compact, the next message is sent as usual.
+        assert_eq!(send(&mut app, "Encore").kind, JobKind::Reply);
+
+        let mut quiet = small_window_app(false);
+        quiet.compact_threshold = 0;
+        fill(&mut quiet, 7_400);
+        assert_eq!(quiet.status, Status::Ready, "suggestion turned off");
+    }
+
+    #[test]
+    fn auto_compact_summarizes_then_sends_the_message() {
+        let mut app = small_window_app(true);
+        fill(&mut app, 7_400);
+        assert!(
+            matches!(&app.status, Status::Info(m) if m.ends_with("avant votre prochain message"))
+        );
+
+        let summary = send(&mut app, "La suite ?");
+        assert_eq!(
+            summary.kind,
+            JobKind::Summary,
+            "the history is summarized first"
+        );
+        assert!(app.input.is_empty());
+        token(&mut app, summary.request_id, "- résumé");
+        let effects = app.update(Action::Llm {
+            request_id: summary.request_id,
+            event: LlmEvent::Done,
+        });
+        let reply = effects
+            .iter()
+            .find_map(|e| match e {
+                Effect::StartCompletion(job) => Some(job.clone()),
+                _ => None,
+            })
+            .expect("the queued message is sent");
+        assert_eq!(reply.kind, JobKind::Reply);
+        let contents: Vec<&str> = reply.history.iter().map(|m| m.content.as_str()).collect();
+        assert_eq!(contents, vec!["- résumé", "La suite ?"]);
+    }
+
+    #[test]
+    fn a_failed_auto_compact_gives_the_message_back() {
+        let mut app = small_window_app(true);
+        fill(&mut app, 7_400);
+        let summary = send(&mut app, "La suite ?");
+        llm(
+            &mut app,
+            summary.request_id,
+            LlmEvent::Error("délai dépassé".into()),
+        );
+        assert_eq!(app.input_text(), "La suite ?");
+        assert_eq!(
+            app.status,
+            Status::Error(
+                "délai dépassé : message non envoyé (il est dans la zone de saisie)".into()
+            )
+        );
+
+        // Enter again: the summary is retried.
+        let retry = app.update(Action::Submit);
+        assert!(matches!(
+            retry.as_slice(),
+            [Effect::StartCompletion(job)] if job.kind == JobKind::Summary
+        ));
+        app.update(Action::Cancel);
+        assert_eq!(app.input_text(), "La suite ?");
     }
 }

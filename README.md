@@ -62,6 +62,11 @@ server: Ollama `GET /api/ps` (effective size, once the model is loaded), LM Stud
 `GET /api/v1/models`, llama.cpp `GET /props`, Anthropic `GET /v1/models/{id}`. OpenAI does
 not report it: set `context_window` if you want the percentage.
 
+Past `compact_threshold` (90 % by default, `0` turns it off) the status bar suggests
+`/compact` after each reply. With `auto_compact = true`, the history is summarized
+automatically before your next message is sent; if the summary fails or you press `Esc`,
+the message stays in the input, unsent.
+
 ### Providers
 
 Three providers are predefined; a section only overrides what it sets:

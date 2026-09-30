@@ -27,6 +27,14 @@ connect_timeout_secs = 5
 # with the mouse. Set to false to keep the terminal's native selection.
 mouse_capture = true
 
+# When the context is this full (percent of the model's window), chatatui suggests
+# /compact. 0 turns the suggestion off.
+compact_threshold = 90
+
+# Past that point, summarize the history automatically (/compact) before sending the
+# next message.
+auto_compact = false
+
 # Document search (/index, /collections). Embeddings are computed by an OpenAI-compatible
 # provider, locally with Ollama by default: `ollama pull bge-m3` first (multilingual,
 # good for French). Changing the model re-indexes a collection from scratch.
@@ -222,6 +230,10 @@ pub struct Config {
     pub system_prompt: String,
     pub connect_timeout_secs: u64,
     pub mouse_capture: bool,
+    /// Context fill (percent) from which `/compact` is suggested; 0 turns it off.
+    pub compact_threshold: u8,
+    /// Past `compact_threshold`, run `/compact` before sending the next message.
+    pub auto_compact: bool,
     /// `[rag]` section: document search settings.
     pub rag: crate::rag::RagConfig,
     /// `[providers.*]` sections; absent means none (not the default `ollama` section), so
@@ -249,6 +261,8 @@ impl Default for Config {
                     .to_owned(),
             connect_timeout_secs: 5,
             mouse_capture: true,
+            compact_threshold: 90,
+            auto_compact: false,
             rag: crate::rag::RagConfig::default(),
             providers: BTreeMap::from([("ollama".to_owned(), ollama)]),
             base_url: None,
