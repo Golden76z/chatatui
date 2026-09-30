@@ -19,9 +19,9 @@ const LONGEST: usize = 5;
 /// Lines of the /context popup for an inner width of `width` columns.
 pub fn lines(app: &App, width: usize) -> Vec<Line<'static>> {
     let bold = Style::default().add_modifier(Modifier::BOLD);
-    let dim = Style::default().fg(Color::DarkGray);
+    let dim = Style::default().fg(crate::theme::palette().dim);
     let title = Style::default()
-        .fg(Color::Cyan)
+        .fg(crate::theme::palette().accent)
         .add_modifier(Modifier::BOLD);
     let label = |text: &str| Span::styled(format!(" {text:<22}"), dim);
 
@@ -51,7 +51,10 @@ pub fn lines(app: &App, width: usize) -> Vec<Line<'static>> {
                     WindowSource::Server => "serveur",
                 }
             )),
-            None => Span::styled("inconnue", Style::default().fg(Color::Yellow)),
+            None => Span::styled(
+                "inconnue",
+                Style::default().fg(crate::theme::palette().warn),
+            ),
         },
     ]));
     lines.push(Line::from(vec![
@@ -169,7 +172,7 @@ pub fn lines(app: &App, width: usize) -> Vec<Line<'static>> {
         } else {
             Span::styled(
                 "  ☁ les extraits sont envoyés au fournisseur",
-                Style::default().fg(Color::Yellow),
+                Style::default().fg(crate::theme::palette().warn),
             )
         };
         lines.push(Line::from(vec![
@@ -248,7 +251,7 @@ pub fn lines(app: &App, width: usize) -> Vec<Line<'static>> {
     if window.is_some_and(|(total, _)| tokens::percent(usage.tokens, total) >= 80) {
         lines.push(Line::styled(
             " Contexte presque plein : /compact résume l'historique, /clear repart de zéro.",
-            Style::default().fg(Color::Yellow),
+            Style::default().fg(crate::theme::palette().warn),
         ));
     }
     if app.conversation.context_start() > 0 {
@@ -277,9 +280,9 @@ pub fn lines(app: &App, width: usize) -> Vec<Line<'static>> {
 /// Gauge colour for a fill percentage.
 pub fn gauge_color(percent: u64) -> Color {
     match percent {
-        0..80 => Color::Green,
-        80..95 => Color::Yellow,
-        _ => Color::Red,
+        0..80 => crate::theme::palette().ok,
+        80..95 => crate::theme::palette().warn,
+        _ => crate::theme::palette().error,
     }
 }
 

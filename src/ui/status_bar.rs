@@ -3,7 +3,7 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
-    style::{Color, Style},
+    style::Style,
     text::{Line, Span},
     widgets::Paragraph,
 };
@@ -18,35 +18,35 @@ use crate::{
 /// Draws the status bar.
 pub fn render(app: &App, frame: &mut Frame, area: Rect) {
     let (label, color) = if app.is_generating() {
-        ("◐ Génération…".to_owned(), Color::Yellow)
+        ("◐ Génération…".to_owned(), crate::theme::palette().warn)
     } else {
         match &app.status {
-            Status::Ready | Status::Generating => ("● Prêt".to_owned(), Color::Green),
-            Status::Info(message) => (format!("● {message}"), Color::Cyan),
-            Status::Error(message) => (format!("✖ {message}"), Color::Red),
+            Status::Ready | Status::Generating => ("● Prêt".to_owned(), crate::theme::palette().ok),
+            Status::Info(message) => (format!("● {message}"), crate::theme::palette().accent),
+            Status::Error(message) => (format!("✖ {message}"), crate::theme::palette().error),
         }
     };
     let left = Line::from(vec![
         Span::raw(" "),
         Span::styled(label, Style::default().fg(color)),
-        Span::styled(" │ ", Style::default().fg(Color::DarkGray)),
+        Span::styled(" │ ", Style::default().fg(crate::theme::palette().dim)),
         // Cloud providers are flagged: the conversation leaves the machine.
         Span::styled(
             if app.is_local() { "" } else { "☁ " },
-            Style::default().fg(Color::Yellow),
+            Style::default().fg(crate::theme::palette().warn),
         ),
         Span::raw(app.model_display()),
     ]);
-    let left = with_indexing(app, with_rag(app, with_gauge(app, left)));
+    let left = with_indexing(app, with_rag(app, with_gauge(app, with_persona(app, left))));
 
     // State and model take priority over hints: the first hint set that fits is shown.
-    let style = Style::default().bg(Color::Black);
+    let style = Style::default().bg(crate::theme::palette().bar_bg);
     let available = usize::from(area.width).saturating_sub(left.width() + 1);
     let Some(hints) = hint_candidates(app)
         .into_iter()
         .map(|text| {
             Line::from(text)
-                .style(Style::default().fg(Color::DarkGray))
+                .style(Style::default().fg(crate::theme::palette().dim))
                 .right_aligned()
         })
         .find(|line| line.width() <= available)
@@ -69,7 +69,7 @@ fn with_gauge(app: &App, mut line: Line<'static>) -> Line<'static> {
     let usage = app.context_usage();
     let approx = if usage.measured { "" } else { "≈" };
     let used = tokens::format_short(usage.tokens);
-    let dim = Style::default().fg(Color::DarkGray);
+    let dim = Style::default().fg(crate::theme::palette().dim);
     line.push_span(Span::styled(" │ ", dim));
     match app.context_window() {
         Some((window, _)) => {
@@ -91,6 +91,17 @@ fn with_gauge(app: &App, mut line: Line<'static>) -> Line<'static> {
     line
 }
 
+/// Appends the named system prompt (`✦ prof`) when one is chosen.
+fn with_persona(app: &App, mut line: Line<'static>) -> Line<'static> {
+    if let Some(persona) = &app.persona {
+        line.push_span(Span::styled(
+            format!(" ✦ {persona}"),
+            Style::default().fg(crate::theme::palette().accent),
+        ));
+    }
+    line
+}
+
 /// Appends the collection searched for replies (`/rag`); flagged when it goes to the cloud.
 fn with_rag(app: &App, mut line: Line<'static>) -> Line<'static> {
     let names = app.rag_names();
@@ -98,17 +109,20 @@ fn with_rag(app: &App, mut line: Line<'static>) -> Line<'static> {
         return line;
     }
     let collection = names.join(", ");
-    line.push_span(Span::styled(" │ ", Style::default().fg(Color::DarkGray)));
+    line.push_span(Span::styled(
+        " │ ",
+        Style::default().fg(crate::theme::palette().dim),
+    ));
     if app.is_local() {
         line.push_span(Span::styled(
             format!("⌕ {collection}"),
-            Style::default().fg(Color::Blue),
+            Style::default().fg(crate::theme::palette().info),
         ));
     } else {
         // The passages leave the machine with the prompt.
         line.push_span(Span::styled(
             format!("⌕ {collection} ☁"),
-            Style::default().fg(Color::Yellow),
+            Style::default().fg(crate::theme::palette().warn),
         ));
     }
     line
@@ -119,7 +133,10 @@ fn with_indexing(app: &App, mut line: Line<'static>) -> Line<'static> {
     let Some(progress) = &app.indexing else {
         return line;
     };
-    line.push_span(Span::styled(" │ ", Style::default().fg(Color::DarkGray)));
+    line.push_span(Span::styled(
+        " │ ",
+        Style::default().fg(crate::theme::palette().dim),
+    ));
     let count = if progress.total == 0 {
         "…".to_owned()
     } else {
@@ -127,7 +144,7 @@ fn with_indexing(app: &App, mut line: Line<'static>) -> Line<'static> {
     };
     line.push_span(Span::styled(
         format!("⟳ {} {count}", progress.collection),
-        Style::default().fg(Color::Magenta),
+        Style::default().fg(crate::theme::palette().assistant),
     ));
     line
 }

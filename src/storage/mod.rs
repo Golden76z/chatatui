@@ -34,6 +34,8 @@ pub struct ConversationRecord {
     pub model: String,
     /// Document collection searched for each reply (`/rag`).
     pub rag_collection: Option<String>,
+    /// Named system prompt (`/persona`).
+    pub persona: Option<String>,
 }
 
 /// A row of the conversation list.
@@ -57,6 +59,8 @@ pub struct StoredConversation {
     pub context_start: u64,
     /// Document collection searched for each reply (`/rag`).
     pub rag_collection: Option<String>,
+    /// Named system prompt (`/persona`).
+    pub persona: Option<String>,
 }
 
 /// Work for the storage worker.
@@ -75,6 +79,11 @@ pub enum StoreRequest {
     },
     /// Move the start of a conversation's context (after `/clear` or `/compact`).
     SetContextStart { id: ConversationId, start: u64 },
+    /// Change the named system prompt of a stored conversation (`/persona`).
+    SetPersona {
+        id: ConversationId,
+        persona: Option<String>,
+    },
     /// Change the document collection of a stored conversation (`/rag`).
     SetRag {
         id: ConversationId,
@@ -198,6 +207,14 @@ impl Store {
             StoreRequest::SetContextStart { id, start } => {
                 self.set_context_start(&id, start).map(|()| None)
             }
+            StoreRequest::SetPersona { id, persona } => self
+                .conn
+                .execute(
+                    "UPDATE conversations SET persona = ?2 WHERE id = ?1",
+                    params![id.0, persona],
+                )
+                .map(|_| None)
+                .map_err(StoreError::from),
             StoreRequest::SetRag { id, collection } => {
                 self.set_rag(&id, collection.as_deref()).map(|()| None)
             }
@@ -256,10 +273,11 @@ impl Store {
         let tx = self.conn.transaction()?;
         tx.execute(
             "INSERT INTO conversations
-                 (id, title, provider, model, rag_collection, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
+                 (id, title, provider, model, rag_collection, persona, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?7, ?6, ?6)
              ON CONFLICT (id) DO UPDATE SET provider = excluded.provider,
                  model = excluded.model, rag_collection = excluded.rag_collection,
+                 persona = excluded.persona,
                  updated_at = excluded.updated_at",
             params![
                 conversation.id.0,
@@ -267,7 +285,8 @@ impl Store {
                 conversation.provider,
                 conversation.model,
                 conversation.rag_collection,
-                now
+                now,
+                conversation.persona
             ],
         )?;
         tx.execute(
@@ -415,10 +434,11 @@ impl Store {
 
     /// A conversation with its messages in order.
     pub fn load(&self, id: &ConversationId) -> Result<StoredConversation, StoreError> {
-        let (summary, context_start, rag_collection) = self
+        let (summary, context_start, rag_collection, persona) = self
             .conn
             .query_row(
-                "SELECT id, title, provider, model, updated_at, context_start, rag_collection
+                "SELECT id, title, provider, model, updated_at, context_start, rag_collection,
+                        persona
                  FROM conversations WHERE id = ?1",
                 [&id.0],
                 |row| {
@@ -432,6 +452,7 @@ impl Store {
                         },
                         row.get::<_, i64>(5)?,
                         row.get::<_, Option<String>>(6)?,
+                        row.get::<_, Option<String>>(7)?,
                     ))
                 },
             )
@@ -470,6 +491,7 @@ impl Store {
             messages,
             context_start: u64::try_from(context_start).unwrap_or(0),
             rag_collection,
+            persona,
         })
     }
 }
@@ -587,6 +609,7 @@ mod tests {
             provider: "ollama".into(),
             model: "llama3.2".into(),
             rag_collection: None,
+            persona: None,
         }
     }
 

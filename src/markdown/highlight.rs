@@ -20,8 +20,6 @@ use syntect::{
     util::LinesWithEndings,
 };
 
-const THEME: &str = "base16-ocean.dark";
-
 /// Maximum number of cached blocks; the cache is simply emptied when full.
 const CACHE_CAPACITY: usize = 256;
 
@@ -69,7 +67,7 @@ fn theme() -> Option<&'static Theme> {
     THEMES
         .get_or_init(ThemeSet::load_defaults)
         .themes
-        .get(THEME)
+        .get(crate::theme::palette().code_theme)
 }
 
 fn find_syntax(lang: &str) -> Option<&'static SyntaxReference> {

@@ -8,7 +8,7 @@
 use ratatui::{
     Frame,
     layout::Rect,
-    style::{Color, Style},
+    style::Style,
     text::Line,
     widgets::{Block, BorderType, Clear, Paragraph},
 };
@@ -124,7 +124,7 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
     };
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(Color::Cyan))
+        .border_style(Style::default().fg(crate::theme::palette().accent))
         .title(popup.title)
         .title_bottom(Line::from(format!("{position}Échap fermer ")).right_aligned());
     frame.render_widget(

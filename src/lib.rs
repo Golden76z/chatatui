@@ -28,6 +28,7 @@ pub mod runtime;
 pub mod state;
 pub mod storage;
 pub mod terminal;
+pub mod theme;
 pub mod tokens;
 pub mod transcript;
 pub mod ui;

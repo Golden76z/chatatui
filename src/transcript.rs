@@ -6,7 +6,7 @@
 //! computes anything.
 
 use ratatui::{
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
 };
 
@@ -166,7 +166,7 @@ pub fn message_lines(message: &Message, width: usize) -> Vec<Line<'static>> {
         Role::Attachment => attachment_card(message, width),
     };
 
-    let dim = Style::default().fg(Color::DarkGray);
+    let dim = Style::default().fg(crate::theme::palette().dim);
     match &message.status {
         MessageStatus::Complete => {}
         MessageStatus::Streaming => match body.last_mut() {
@@ -175,7 +175,7 @@ pub fn message_lines(message: &Message, width: usize) -> Vec<Line<'static>> {
         },
         MessageStatus::Cancelled => body.push(Line::styled("[interrompu]", dim.italic())),
         MessageStatus::Failed(error) => {
-            let red = Style::default().fg(Color::Red);
+            let red = Style::default().fg(crate::theme::palette().error);
             let spans = [Span::styled(format!("✖ {error}"), red)];
             body.extend(wrap_spans(&spans, width).into_iter().map(Line::from));
         }
@@ -190,7 +190,7 @@ pub fn message_lines(message: &Message, width: usize) -> Vec<Line<'static>> {
 
 /// `Sources : [1] cours.pdf p. 3 · [2] plan.docx § Séance 1`, wrapped.
 fn citation_lines(message: &Message, width: usize) -> Vec<Line<'static>> {
-    let dim = Style::default().fg(Color::DarkGray);
+    let dim = Style::default().fg(crate::theme::palette().dim);
     let mut spans = vec![Span::styled("Sources : ", dim)];
     for (i, citation) in message.citations.iter().enumerate() {
         if i > 0 {
@@ -198,7 +198,7 @@ fn citation_lines(message: &Message, width: usize) -> Vec<Line<'static>> {
         }
         spans.push(Span::styled(
             format!("[{}] ", citation.number),
-            Style::default().fg(Color::Blue),
+            Style::default().fg(crate::theme::palette().info),
         ));
         spans.push(Span::styled(citation.label(), dim));
     }
@@ -210,11 +210,11 @@ fn citation_lines(message: &Message, width: usize) -> Vec<Line<'static>> {
 
 fn header(role: Role) -> Line<'static> {
     let (label, color) = match role {
-        Role::System => ("Système", Color::DarkGray),
-        Role::User => ("Vous", Color::Cyan),
-        Role::Assistant => ("Assistant", Color::Magenta),
-        Role::Attachment => ("Fichier joint", Color::Yellow),
-        Role::Summary => ("Résumé de la conversation", Color::Blue),
+        Role::System => ("Système", crate::theme::palette().dim),
+        Role::User => ("Vous", crate::theme::palette().accent),
+        Role::Assistant => ("Assistant", crate::theme::palette().assistant),
+        Role::Attachment => ("Fichier joint", crate::theme::palette().warn),
+        Role::Summary => ("Résumé de la conversation", crate::theme::palette().info),
     };
     Line::styled(
         format!("▌ {label}"),
@@ -231,7 +231,10 @@ fn attachment_card(message: &Message, width: usize) -> Vec<Line<'static>> {
         tokens::format_count(tokens::estimate(&message.content))
     );
     wrap_spans(
-        &[Span::styled(text, Style::default().fg(Color::Yellow))],
+        &[Span::styled(
+            text,
+            Style::default().fg(crate::theme::palette().warn),
+        )],
         width,
     )
     .into_iter()
@@ -255,7 +258,7 @@ fn boundary(summary: bool, width: usize) -> Vec<Line<'static>> {
     } else {
         "── contexte vidé : les messages au-dessus ne sont plus envoyés au modèle ──"
     };
-    let style = Style::default().fg(Color::Blue);
+    let style = Style::default().fg(crate::theme::palette().info);
     let mut lines: Vec<Line<'static>> = wrap_spans(&[Span::styled(text, style)], width)
         .into_iter()
         .map(Line::from)
@@ -269,7 +272,7 @@ fn dimmed(line: Line<'static>) -> Line<'static> {
     let spans = line
         .spans
         .into_iter()
-        .map(|span| span.style(Style::default().fg(Color::DarkGray)))
+        .map(|span| span.style(Style::default().fg(crate::theme::palette().dim)))
         .collect::<Vec<_>>();
     Line::from(spans)
 }
@@ -410,7 +413,7 @@ mod tests {
             lines[1]
                 .spans
                 .iter()
-                .all(|s| s.style.fg == Some(Color::DarkGray)),
+                .all(|s| s.style.fg == Some(crate::theme::palette().dim)),
             "old messages are greyed out"
         );
 

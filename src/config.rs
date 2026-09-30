@@ -27,6 +27,9 @@ connect_timeout_secs = 5
 # with the mouse. Set to false to keep the terminal's native selection.
 mouse_capture = true
 
+# Colours: "auto" (from the terminal's COLORFGBG, dark when unknown), "dark" or "light".
+theme = "auto"
+
 # When the context is this full (percent of the model's window), chatatui suggests
 # /compact. 0 turns the suggestion off.
 compact_threshold = 90
@@ -34,6 +37,11 @@ compact_threshold = 90
 # Past that point, summarize the history automatically (/compact) before sending the
 # next message.
 auto_compact = false
+
+# Named system prompts, chosen per conversation with /persona <name>:
+# [prompts]
+# prof = "Tu es un professeur de Rust patient. Explique pas à pas, avec des exemples."
+# relecteur = "Relis le texte donné : fautes, clarté, style. Réponds par une liste."
 
 # Document search (/index, /collections). Embeddings are computed by an OpenAI-compatible
 # provider, locally with Ollama by default: `ollama pull bge-m3` first (multilingual,
@@ -233,10 +241,14 @@ pub struct Config {
     pub system_prompt: String,
     pub connect_timeout_secs: u64,
     pub mouse_capture: bool,
+    /// Colours for dark or light terminals.
+    pub theme: crate::theme::ThemeName,
     /// Context fill (percent) from which `/compact` is suggested; 0 turns it off.
     pub compact_threshold: u8,
     /// Past `compact_threshold`, run `/compact` before sending the next message.
     pub auto_compact: bool,
+    /// `[prompts]` section: named system prompts (`/persona <name>`).
+    pub prompts: BTreeMap<String, String>,
     /// `[rag]` section: document search settings.
     pub rag: crate::rag::RagConfig,
     /// `[providers.*]` sections; absent means none (not the default `ollama` section), so
@@ -264,8 +276,10 @@ impl Default for Config {
                     .to_owned(),
             connect_timeout_secs: 5,
             mouse_capture: true,
+            theme: crate::theme::ThemeName::Auto,
             compact_threshold: 90,
             auto_compact: false,
+            prompts: BTreeMap::new(),
             rag: crate::rag::RagConfig::default(),
             providers: BTreeMap::from([("ollama".to_owned(), ollama)]),
             base_url: None,

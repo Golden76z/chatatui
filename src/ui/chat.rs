@@ -3,7 +3,7 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Flex, Layout, Rect},
-    style::{Color, Style, Stylize},
+    style::{Style, Stylize},
     text::{Line, Text},
     widgets::Paragraph,
 };
@@ -26,8 +26,11 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
     // Hint shown while scrolled away from the latest content.
     let total = app.transcript.total_lines();
     if offset + height < total {
-        let hint =
-            Line::from(" ↓ Ctrl+Fin ").style(Style::default().fg(Color::Black).bg(Color::Gray));
+        let hint = Line::from(" ↓ Ctrl+Fin ").style(
+            Style::default()
+                .fg(crate::theme::palette().badge_fg)
+                .bg(crate::theme::palette().badge_bg),
+        );
         let width = u16::try_from(hint.width()).unwrap_or(u16::MAX);
         let [_, hint_area] = Layout::horizontal([Constraint::Fill(1), Constraint::Length(width)])
             .areas(Rect {

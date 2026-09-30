@@ -3,7 +3,7 @@
 use ratatui::{
     Frame,
     layout::Rect,
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Clear, List, ListItem, ListState},
 };
@@ -32,7 +32,7 @@ pub fn render(app: &App, suggestions: &[&CommandSpec], frame: &mut Frame, chat: 
         .map(|c| display_width(&c.usage()))
         .max()
         .unwrap_or(0);
-    let dim = Style::default().fg(Color::DarkGray);
+    let dim = Style::default().fg(crate::theme::palette().dim);
     let items: Vec<ListItem> = suggestions
         .iter()
         .map(|spec| {
@@ -72,11 +72,11 @@ pub fn render(app: &App, suggestions: &[&CommandSpec], frame: &mut Frame, chat: 
         .block(
             Block::bordered()
                 .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(Color::Cyan))
+                .border_style(Style::default().fg(crate::theme::palette().accent))
                 .title(" Commandes "),
         )
         .highlight_symbol("▌")
-        .highlight_style(Style::default().bg(Color::DarkGray));
+        .highlight_style(Style::default().bg(crate::theme::palette().selection_bg));
     let selected = app.suggestion.min(suggestions.len().saturating_sub(1));
     // A throwaway state: the selection lives in `App`.
     let mut state = ListState::default().with_selected(Some(selected));

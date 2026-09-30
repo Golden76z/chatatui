@@ -78,6 +78,7 @@ fn run(location: Location, requests: &mpsc::Receiver<StoreRequest>, report: &dyn
                         | StoreRequest::SetModel { .. }
                         | StoreRequest::SetContextStart { .. }
                         | StoreRequest::SetRag { .. }
+                        | StoreRequest::SetPersona { .. }
                         | StoreRequest::Rename { .. }
                         | StoreRequest::Truncate { .. }
                 ) {
@@ -126,6 +127,7 @@ mod tests {
                 provider: "p".into(),
                 model: "m".into(),
                 rag_collection: None,
+                persona: None,
             },
             message: Message {
                 id: MessageId(0),

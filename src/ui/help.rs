@@ -1,7 +1,7 @@
 //! Help screen (F1, /help): commands and key bindings.
 
 use ratatui::{
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
 };
 
@@ -15,10 +15,10 @@ use crate::{
 /// descriptions wrap under their column.
 pub fn lines(app: &App, inner_width: usize) -> Vec<Line<'static>> {
     let title = Style::default()
-        .fg(Color::Cyan)
+        .fg(crate::theme::palette().accent)
         .add_modifier(Modifier::BOLD);
     let bold = Style::default().add_modifier(Modifier::BOLD);
-    let dim = Style::default().fg(Color::DarkGray);
+    let dim = Style::default().fg(crate::theme::palette().dim);
 
     let mut lines = vec![Line::styled(" Commandes (tapez / ou Ctrl+P)", title)];
     let width = COMMANDS

@@ -3,7 +3,7 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Clear, List, ListItem, ListState, Paragraph},
 };
@@ -24,7 +24,7 @@ pub fn render(app: &App, palette: &Palette, frame: &mut Frame, area: Rect) {
 
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(Color::Cyan))
+        .border_style(Style::default().fg(crate::theme::palette().accent))
         .title(" Commandes ")
         .title_bottom(Line::from(" Entrée lancer · Échap fermer ").right_aligned());
     let inner = block.inner(popup);
@@ -36,7 +36,7 @@ pub fn render(app: &App, palette: &Palette, frame: &mut Frame, area: Rect) {
     ])
     .areas(inner);
 
-    let dim = Style::default().fg(Color::DarkGray);
+    let dim = Style::default().fg(crate::theme::palette().dim);
     let filter = if palette.filter.is_empty() {
         Line::from(Span::styled(" Tapez pour filtrer…", dim))
     } else {
@@ -84,7 +84,7 @@ pub fn render(app: &App, palette: &Palette, frame: &mut Frame, area: Rect) {
         .collect();
     let list = List::new(items)
         .highlight_symbol("▌")
-        .highlight_style(Style::default().bg(Color::DarkGray));
+        .highlight_style(Style::default().bg(crate::theme::palette().selection_bg));
     // A throwaway state: the selection lives in `Palette`.
     let mut state = ListState::default().with_selected(Some(palette.selected));
     frame.render_stateful_widget(list, list_area, &mut state);

@@ -19,6 +19,7 @@ pub enum CommandId {
     Rename,
     Delete,
     Copy,
+    Persona,
     Edit,
     Retry,
     Export,
@@ -209,6 +210,15 @@ pub const COMMANDS: &[CommandSpec] = &[
         arg: Arg::Optional("[code [n]]"),
         description: "Copier la dernière réponse, ou un de ses blocs de code",
         shortcut: Some("Ctrl+Y"),
+        legacy_shortcut: None,
+    },
+    CommandSpec {
+        id: CommandId::Persona,
+        name: "persona",
+        aliases: &["role", "rôle"],
+        arg: Arg::Optional("[nom|off]"),
+        description: "Choisir un prompt système nommé ([prompts] dans la config)",
+        shortcut: None,
         legacy_shortcut: None,
     },
     CommandSpec {
@@ -436,7 +446,7 @@ mod tests {
             vec!["add", "help"],
             "help via its « aide » alias"
         );
-        assert_eq!(names(&suggestions("/p")), vec!["prompt"]);
+        assert_eq!(names(&suggestions("/p")), vec!["prompt", "persona"]);
         assert_eq!(
             names(&suggestions("/ex")),
             vec!["export", "quit"],

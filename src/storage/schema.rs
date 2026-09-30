@@ -115,6 +115,10 @@ const MIGRATIONS: &[&str] = &[
     END;
     INSERT INTO messages_fts (messages_fts) VALUES ('rebuild');
     "#,
+    // v8: named system prompt of a conversation (`/persona`).
+    r#"
+    ALTER TABLE conversations ADD COLUMN persona TEXT;
+    "#,
 ];
 
 /// Latest schema version.

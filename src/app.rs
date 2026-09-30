@@ -15,7 +15,7 @@ use std::collections::HashMap;
 
 use ratatui::{
     layout::Rect,
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     widgets::{Block, BorderType},
 };
 use ratatui_textarea::{TextArea, WrapMode};
@@ -256,8 +256,12 @@ pub struct App {
     pub provider: String,
     /// Model used for the next request (empty until one is chosen).
     pub model: String,
-    /// System prompt sent with every request.
+    /// System prompt sent with every request (unless a persona is chosen).
     pub system_prompt: String,
+    /// Named system prompts (`[prompts]` in the configuration).
+    pub prompts: std::collections::BTreeMap<String, String>,
+    /// Named system prompt of this conversation (`/persona`).
+    pub persona: Option<String>,
     /// Whether the terminal distinguishes `Shift+Enter` (affects the hints shown).
     pub keyboard_enhanced: bool,
     /// The conversation being displayed.
@@ -352,6 +356,8 @@ impl App {
             provider,
             model,
             system_prompt: config.system_prompt.clone(),
+            prompts: config.prompts.clone(),
+            persona: None,
             keyboard_enhanced,
             conversation: Conversation::new(),
             conversation_id: None,
@@ -437,7 +443,7 @@ impl App {
                 .unwrap_or_default(),
         };
         prompt::build_messages(
-            &self.system_prompt,
+            self.active_system_prompt(),
             &context,
             self.conversation.context_messages(),
         )
@@ -465,6 +471,14 @@ impl App {
                 measured: false,
             },
         }
+    }
+
+    /// The system prompt sent: the persona's when one is chosen and configured.
+    pub fn active_system_prompt(&self) -> &str {
+        self.persona
+            .as_ref()
+            .and_then(|name| self.prompts.get(name))
+            .map_or(&self.system_prompt, |prompt| prompt)
     }
 
     /// The collections searched for each reply (`/rag`).
@@ -990,6 +1004,7 @@ impl App {
             CommandId::Forget => self.forget(arg.trim()),
             CommandId::Rename => self.rename_current(arg.trim()),
             CommandId::Copy => self.copy(arg.trim()),
+            CommandId::Persona => self.choose_persona(arg.trim()),
             CommandId::Edit => self.start_edit(),
             CommandId::Retry => self.retry(arg.trim()),
             CommandId::Export => self.export(arg.trim()),
@@ -1242,7 +1257,7 @@ impl App {
             request_id,
             provider: self.provider.clone(),
             model: self.model.clone(),
-            system_prompt: self.system_prompt.clone(),
+            system_prompt: self.active_system_prompt().to_owned(),
             history: self.conversation.context_messages().to_vec(),
             rag_collection: match kind {
                 JobKind::Reply => self.rag_collection.clone(),
@@ -1581,6 +1596,46 @@ impl App {
         Vec::new()
     }
 
+    /// `/persona [name|off]`: shows, chooses or leaves the named system prompt.
+    fn choose_persona(&mut self, name: &str) -> Vec<Effect> {
+        let known: Vec<&str> = self.prompts.keys().map(String::as_str).collect();
+        let listing = if known.is_empty() {
+            "aucun : ajoutez une section [prompts] dans config.toml".to_owned()
+        } else {
+            known.join(", ")
+        };
+        let chosen = match name {
+            "" => {
+                self.status = Status::Info(match &self.persona {
+                    Some(current) => format!("persona : {current} (disponibles : {listing})"),
+                    None => format!("prompt par défaut (personas : {listing})"),
+                });
+                return Vec::new();
+            }
+            "off" | "default" | "defaut" | "défaut" => None,
+            name if self.prompts.contains_key(name) => Some(name.to_owned()),
+            name => {
+                self.status = Status::Error(format!("persona « {name} » inconnue ({listing})"));
+                return Vec::new();
+            }
+        };
+        self.status = Status::Info(match &chosen {
+            Some(name) => format!("persona : {name}"),
+            None => "prompt système par défaut".into(),
+        });
+        if self.persona == chosen {
+            return Vec::new();
+        }
+        self.persona = chosen.clone();
+        match &self.conversation_id {
+            Some(id) => vec![Effect::Store(StoreRequest::SetPersona {
+                id: id.clone(),
+                persona: chosen,
+            })],
+            None => Vec::new(),
+        }
+    }
+
     /// `/copy [code [n]]`: copies the last reply, or its code block `n` (default: the last).
     fn copy(&mut self, arg: &str) -> Vec<Effect> {
         let reply = self.conversation.messages().iter().rev().find(|m| {
@@ -1847,6 +1902,7 @@ impl App {
             provider: self.provider.clone(),
             model: self.model.clone(),
             rag_collection: self.rag_collection.clone(),
+            persona: self.persona.clone(),
         };
         Some(Effect::Store(StoreRequest::SaveMessage {
             conversation,
@@ -2174,11 +2230,22 @@ impl App {
             self.model = summary.model;
         }
         self.rag_collection = stored.rag_collection;
+        self.persona = stored.persona;
+        let missing_persona = self
+            .persona
+            .as_ref()
+            .filter(|name| !self.prompts.contains_key(*name))
+            .cloned();
         self.replace_conversation(
             Conversation::from_messages(stored.messages, stored.context_start),
             Some(summary.id),
             Some(summary.title),
         );
+        if let Some(name) = missing_persona {
+            self.status = Status::Error(format!(
+                "persona « {name} » absente de la config : prompt système par défaut"
+            ));
+        }
         let mut effects = effects;
         effects.extend(self.detect_window());
         effects
@@ -2250,11 +2317,11 @@ fn new_input() -> TextArea<'static> {
     input.set_block(
         Block::bordered()
             .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(Color::DarkGray))
+            .border_style(Style::default().fg(crate::theme::palette().dim))
             .title(" Message "),
     );
     input.set_placeholder_text("Écrivez votre message…");
-    input.set_placeholder_style(Style::default().fg(Color::DarkGray));
+    input.set_placeholder_style(Style::default().fg(crate::theme::palette().dim));
     input.set_cursor_line_style(Style::default());
     input.set_cursor_style(Style::default().add_modifier(Modifier::REVERSED));
     input.set_wrap_mode(WrapMode::WordOrGlyph);
@@ -2760,6 +2827,7 @@ mod tests {
             messages: stored.messages().to_vec(),
             context_start: 0,
             rag_collection: None,
+            persona: None,
         })));
 
         assert!(
@@ -3550,6 +3618,7 @@ mod tests {
             messages: Vec::new(),
             context_start: 0,
             rag_collection: Some("rust".into()),
+            persona: None,
         })));
         assert_eq!(app.rag_collection.as_deref(), Some("rust"));
         app.update(Action::NewConversation);
@@ -4135,5 +4204,52 @@ mod tests {
             app.run_command(CommandId::Export, "~/notes.md").as_slice(),
             [Effect::Export { path: Some(p), .. }] if p == "~/notes.md"
         ));
+    }
+
+    #[test]
+    fn personas_change_the_system_prompt_per_conversation() {
+        let mut config = Config::default();
+        config
+            .prompts
+            .insert("prof".into(), "Explique pas à pas.".into());
+        let mut app = App::new(&config, false);
+        assert!(app.run_command(CommandId::Persona, "inconnue").is_empty());
+        assert!(matches!(&app.status, Status::Error(m) if m.contains("(prof)")));
+        app.run_command(CommandId::Persona, "prof");
+        let job = send(&mut app, "Les lifetimes ?");
+        assert_eq!(job.system_prompt, "Explique pas à pas.");
+        assert!(app.prompt()[0].content.starts_with("Explique pas à pas."));
+        llm(&mut app, job.request_id, LlmEvent::Done);
+
+        let effects = app.run_command(CommandId::Persona, "off");
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::Store(StoreRequest::SetPersona {
+                persona: None,
+                ..
+            })]
+        ));
+        assert_eq!(send(&mut app, "Et ?").system_prompt, config.system_prompt);
+
+        // A stored persona that left the configuration falls back to the default.
+        let mut other = App::new(&Config::default(), false);
+        other.update(Action::Storage(StoreEvent::Loaded(StoredConversation {
+            summary: crate::storage::ConversationSummary {
+                id: ConversationId("old".into()),
+                title: "t".into(),
+                provider: "ollama".into(),
+                model: "llama3.2".into(),
+                updated_at: 0,
+            },
+            messages: Vec::new(),
+            context_start: 0,
+            rag_collection: None,
+            persona: Some("prof".into()),
+        })));
+        assert!(matches!(&other.status, Status::Error(m) if m.contains("absente de la config")));
+        assert_eq!(
+            other.active_system_prompt(),
+            Config::default().system_prompt
+        );
     }
 }

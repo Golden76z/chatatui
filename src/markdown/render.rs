@@ -2,7 +2,7 @@
 
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use ratatui::{
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
 };
 
@@ -14,18 +14,20 @@ use super::{
 const BULLETS: [&str; 3] = ["• ", "◦ ", "▪ "];
 
 fn dim() -> Style {
-    Style::default().fg(Color::DarkGray)
+    Style::default().fg(crate::theme::palette().dim)
 }
 
 fn inline_code() -> Style {
-    Style::default().fg(Color::Yellow)
+    Style::default().fg(crate::theme::palette().warn)
 }
 
 fn heading_style(level: HeadingLevel) -> Style {
     let bold = Style::default().add_modifier(Modifier::BOLD);
     match level {
-        HeadingLevel::H1 => bold.fg(Color::Cyan).add_modifier(Modifier::UNDERLINED),
-        HeadingLevel::H2 => bold.fg(Color::Cyan),
+        HeadingLevel::H1 => bold
+            .fg(crate::theme::palette().accent)
+            .add_modifier(Modifier::UNDERLINED),
+        HeadingLevel::H2 => bold.fg(crate::theme::palette().accent),
         _ => bold,
     }
 }
@@ -247,7 +249,7 @@ impl Renderer {
             Tag::Link { dest_url, .. } => {
                 self.push_style(
                     Style::default()
-                        .fg(Color::Blue)
+                        .fg(crate::theme::palette().info)
                         .add_modifier(Modifier::UNDERLINED),
                 );
                 self.link = Some((dest_url.into_string(), self.inline.len()));
@@ -441,7 +443,7 @@ impl Renderer {
                     } else {
                         spans.push(Span::styled(
                             marker.clone(),
-                            Style::default().fg(Color::Blue),
+                            Style::default().fg(crate::theme::palette().info),
                         ));
                         *marker_shown = true;
                     }
@@ -665,7 +667,10 @@ Fin."#;
                 .add_modifier
                 .contains(Modifier::ITALIC)
         );
-        assert_eq!(span(&lines, "code").style.fg, Some(Color::Yellow));
+        assert_eq!(
+            span(&lines, "code").style.fg,
+            Some(ratatui::style::Color::Yellow)
+        );
         assert!(
             span(&lines, "barré")
                 .style
@@ -712,7 +717,10 @@ Fin."#;
     fn code_block_is_highlighted_with_gutter() {
         let lines = render("```rust\nlet x = 1;\n```", 80);
         assert_eq!(text(&lines), "▎ rust\n▎ let x = 1;");
-        assert!(matches!(span(&lines, "let").style.fg, Some(Color::Rgb(..))));
+        assert!(matches!(
+            span(&lines, "let").style.fg,
+            Some(ratatui::style::Color::Rgb(..))
+        ));
     }
 
     #[test]

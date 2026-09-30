@@ -1,7 +1,7 @@
 //! Content of the /prompt popup: the exact messages of the next request.
 
 use ratatui::{
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
 };
 
@@ -14,7 +14,7 @@ use crate::{
 
 /// Lines of the /prompt popup for an inner width of `width` columns.
 pub fn lines(app: &App, width: usize) -> Vec<Line<'static>> {
-    let dim = Style::default().fg(Color::DarkGray);
+    let dim = Style::default().fg(crate::theme::palette().dim);
     let destination = if app.is_local() {
         "local"
     } else {
@@ -45,9 +45,9 @@ pub fn lines(app: &App, width: usize) -> Vec<Line<'static>> {
     let content_width = width.saturating_sub(2).max(1);
     for message in prompt {
         let (name, color) = match message.role {
-            ChatRole::System => ("system", Color::DarkGray),
-            ChatRole::User => ("user", Color::Cyan),
-            ChatRole::Assistant => ("assistant", Color::Magenta),
+            ChatRole::System => ("system", crate::theme::palette().dim),
+            ChatRole::User => ("user", crate::theme::palette().accent),
+            ChatRole::Assistant => ("assistant", crate::theme::palette().assistant),
         };
         lines.push(Line::from(vec![
             Span::styled(

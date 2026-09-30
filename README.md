@@ -44,6 +44,9 @@ directory (`~/.config/chatatui/config.toml` on Linux):
 | `system_prompt` | short assistant prompt | Sent first in every request; `'''…'''` for several lines, `""` for none |
 | `connect_timeout_secs` | `5` | Connection timeout |
 | `mouse_capture` | `true` | Wheel scrolling; hold Shift to select text. `false` keeps native selection |
+| `theme` | `auto` | `dark`, `light`, or `auto` (from the terminal's `COLORFGBG`, dark when unknown); also picks the code-highlighting theme |
+| `compact_threshold`, `auto_compact` | `90`, `false` | See [Context gauge](#context-gauge) |
+| `[prompts]` | none | Named system prompts, e.g. `prof = "Explique pas à pas."`; `/persona prof` uses one in the current conversation (saved with it, shown as `✦ prof`) |
 | `[providers.<name>]` | see below | One section per provider |
 
 Provider sections accept `kind` (`openai` or `anthropic`), `label`, `base_url`, `model`,
@@ -169,6 +172,7 @@ run), or press `Ctrl+P` for the palette:
 | `/new` | New conversation (`Ctrl+N`) |
 | `/history` | Conversation list (`Ctrl+L`) |
 | `/rename <title>` | Rename the conversation |
+| `/persona [name\|off]` | Use a named system prompt from `[prompts]` in this conversation, or go back to `system_prompt` |
 | `/edit` | Put your last message back in the input: sending it replaces it and what followed (`Esc` cancels) |
 | `/retry [model]` | Replace the last reply with a new one, from another model if given (`/retry claude`) |
 | `/export [file.md]` | Save the conversation as Markdown (named after its title by default; never overwrites) |

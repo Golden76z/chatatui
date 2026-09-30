@@ -1,7 +1,7 @@
 //! Content of the /collections popup: indexed document collections and the last run.
 
 use ratatui::{
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
 };
 
@@ -18,9 +18,9 @@ const SKIPPED_SHOWN: usize = 8;
 /// Lines of the /collections popup for an inner width of `width` columns.
 pub fn lines(app: &App, width: usize) -> Vec<Line<'static>> {
     let bold = Style::default().add_modifier(Modifier::BOLD);
-    let dim = Style::default().fg(Color::DarkGray);
+    let dim = Style::default().fg(crate::theme::palette().dim);
     let title = Style::default()
-        .fg(Color::Cyan)
+        .fg(crate::theme::palette().accent)
         .add_modifier(Modifier::BOLD);
     let mut lines = Vec::new();
     let wrapped = |lines: &mut Vec<Line<'static>>, spans: Vec<Span<'static>>, indent: usize| {
@@ -46,7 +46,7 @@ pub fn lines(app: &App, width: usize) -> Vec<Line<'static>> {
                 if app.rag_names().contains(&collection.name.as_str()) {
                     head.push(Span::styled(
                         "  ⌕ cette conversation",
-                        Style::default().fg(Color::Blue),
+                        Style::default().fg(crate::theme::palette().info),
                     ));
                 }
                 lines.push(Line::from(head));
@@ -79,7 +79,7 @@ pub fn lines(app: &App, width: usize) -> Vec<Line<'static>> {
                                 staleness_summary(stale),
                                 collection.name
                             ),
-                            Style::default().fg(Color::Yellow),
+                            Style::default().fg(crate::theme::palette().warn),
                         )],
                         3,
                     );
@@ -121,7 +121,7 @@ pub fn lines(app: &App, width: usize) -> Vec<Line<'static>> {
             wrapped(
                 &mut lines,
                 vec![
-                    Span::styled("✖ ", Style::default().fg(Color::Yellow)),
+                    Span::styled("✖ ", Style::default().fg(crate::theme::palette().warn)),
                     Span::raw(path.clone()),
                     Span::styled(format!(" — {reason}"), dim),
                 ],

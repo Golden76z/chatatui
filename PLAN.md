@@ -123,6 +123,7 @@ tests/      app_flow.rs http_clients.rs fixtures/*.sse
 | J15 ✅ | Nearly full context: `/compact` suggested past `compact_threshold` (90 %); `auto_compact` summarizes before sending the next message (given back on failure) |
 | J16 ✅ | RAG extras: OCR for scanned PDFs (tesseract + pdftoppm), `/rag a,b` over several collections, `auto_index` of changed collections at startup |
 | J17 ✅ | `/edit` last message and resend, `/retry [model]`, `/export [file.md]` to Markdown |
+| J18 ✅ | Comfort: `theme = auto\|dark\|light` (semantic palette, code theme), named system prompts `[prompts]` + `/persona` per conversation |
 
 Each milestone ends with `cargo fmt`, `cargo clippy --all-targets -- -D warnings`,
 `cargo test` passing.

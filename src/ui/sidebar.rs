@@ -3,7 +3,7 @@
 use ratatui::{
     Frame,
     layout::Rect,
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, List, ListItem, ListState, Paragraph},
 };
@@ -14,7 +14,7 @@ use crate::{app::App, markdown::display_width, state::Sidebar};
 pub fn render(app: &App, sidebar: &Sidebar, frame: &mut Frame, area: Rect) {
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(Color::Cyan))
+        .border_style(Style::default().fg(crate::theme::palette().accent))
         .title(" Conversations ")
         .title_bottom(Line::from(" Ctrl+R renommer · Suppr ").right_aligned());
 
@@ -30,7 +30,7 @@ pub fn render(app: &App, sidebar: &Sidebar, frame: &mut Frame, area: Rect) {
         Line::styled("⌕ tapez pour chercher", dim())
     } else {
         Line::from(vec![
-            Span::styled("⌕ ", Style::default().fg(Color::Cyan)),
+            Span::styled("⌕ ", Style::default().fg(crate::theme::palette().accent)),
             Span::raw(sidebar.filter.clone()),
             Span::styled("▍", dim()),
         ])
@@ -71,12 +71,12 @@ pub fn render(app: &App, sidebar: &Sidebar, frame: &mut Frame, area: Rect) {
                 .filter(|_| index == sidebar.selected);
             let title_line = match renaming {
                 Some(title) => Line::from(vec![
-                    Span::styled("✎ ", Style::default().fg(Color::Yellow)),
+                    Span::styled("✎ ", Style::default().fg(crate::theme::palette().warn)),
                     Span::styled(
                         truncate_start(title, width.saturating_sub(3)),
                         Style::default().add_modifier(Modifier::BOLD),
                     ),
-                    Span::styled("▍", Style::default().fg(Color::Yellow)),
+                    Span::styled("▍", Style::default().fg(crate::theme::palette().warn)),
                 ]),
                 None => Line::from(Span::styled(
                     truncate(&format!("{marker}{}", item.title), width),
@@ -106,7 +106,7 @@ pub fn render(app: &App, sidebar: &Sidebar, frame: &mut Frame, area: Rect) {
             if deleting {
                 lines.push(Line::styled(
                     truncate("Suppr pour confirmer", width),
-                    Style::default().fg(Color::Red),
+                    Style::default().fg(crate::theme::palette().error),
                 ));
             } else {
                 lines.push(Line::from(Span::styled(details, dim())));
@@ -115,7 +115,7 @@ pub fn render(app: &App, sidebar: &Sidebar, frame: &mut Frame, area: Rect) {
                 let flat: String = snippet.split_whitespace().collect::<Vec<_>>().join(" ");
                 lines.push(Line::styled(
                     truncate(&format!("« {flat} »"), width),
-                    Style::default().fg(Color::Blue),
+                    Style::default().fg(crate::theme::palette().info),
                 ));
             }
             ListItem::new(lines)
@@ -125,14 +125,14 @@ pub fn render(app: &App, sidebar: &Sidebar, frame: &mut Frame, area: Rect) {
     let list = List::new(list_items)
         .block(block)
         .highlight_symbol("▌ ")
-        .highlight_style(Style::default().bg(Color::DarkGray));
+        .highlight_style(Style::default().bg(crate::theme::palette().selection_bg));
     // A throwaway state: the selection lives in `Sidebar`, rendering only reads it.
     let mut state = ListState::default().with_selected(Some(sidebar.selected));
     frame.render_stateful_widget(list, area, &mut state);
 }
 
 fn dim() -> Style {
-    Style::default().fg(Color::DarkGray)
+    Style::default().fg(crate::theme::palette().dim)
 }
 
 /// Keeps the end of `text` within `width` columns (for text being typed).

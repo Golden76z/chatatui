@@ -10,6 +10,7 @@ use color_eyre::Result;
 async fn main() -> Result<()> {
     color_eyre::install()?;
     let config = Config::load_or_create()?;
+    chatatui::theme::set(config.theme, std::env::var("COLORFGBG").ok().as_deref());
     // Load syntax definitions in the background; the first code block would stall otherwise.
     tokio::task::spawn_blocking(chatatui::markdown::warm_up);
 
