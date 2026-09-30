@@ -59,7 +59,7 @@ fn content(app: &App, overlay: &Overlay, inner_width: usize) -> Option<TextPopup
             title: " Collections de documents ",
             lines: collections_view::lines(app, inner_width),
         }),
-        Overlay::ModelPicker(_) | Overlay::Palette(_) => None,
+        Overlay::ModelPicker(_) | Overlay::Palette(_) | Overlay::ToolConfirm { .. } => None,
     }
 }
 
@@ -99,7 +99,7 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
         | Overlay::Context { scroll }
         | Overlay::Prompt { scroll }
         | Overlay::Collections { scroll } => *scroll,
-        Overlay::ModelPicker(_) | Overlay::Palette(_) => return,
+        Overlay::ModelPicker(_) | Overlay::Palette(_) | Overlay::ToolConfirm { .. } => return,
     };
     let Some(popup) = content(app, overlay, inner_width(area, overlay)) else {
         return;

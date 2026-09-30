@@ -17,6 +17,7 @@ mod sidebar;
 mod status_bar;
 mod suggestions;
 mod text_popup;
+mod tool_confirm;
 
 pub use text_popup::max_scroll as popup_max_scroll;
 
@@ -38,6 +39,11 @@ pub fn render(app: &App, frame: &mut Frame) {
             model_picker::render(app, picker, frame, frame.area());
         }
         Some(Overlay::Palette(palette)) => palette::render(app, palette, frame, frame.area()),
+        Some(Overlay::ToolConfirm {
+            description,
+            tool,
+            cloud,
+        }) => tool_confirm::render(app, description, tool, *cloud, frame, frame.area()),
         Some(
             Overlay::Help { .. }
             | Overlay::Context { .. }
@@ -503,5 +509,22 @@ mod tests {
         app.update(Action::SidebarDown);
         app.update(Action::SidebarDelete);
         insta::assert_snapshot!(draw(&mut app, 90, 14).backend());
+    }
+
+    #[test]
+    fn tool_call_waiting_for_confirmation() {
+        let mut config = Config::default();
+        config.tools.enabled = true;
+        let mut app = App::new(&config, false);
+        let id = stream(&mut app, "Que dit mon plan ?", &["Je regarde."]);
+        app.update(Action::Llm {
+            request_id: id,
+            event: LlmEvent::ToolCall(crate::llm::ToolCall {
+                id: "c1".into(),
+                name: "read_file".into(),
+                arguments: r#"{"path":"~/cours/plan.md"}"#.into(),
+            }),
+        });
+        insta::assert_snapshot!(draw(&mut app, 80, 16).backend());
     }
 }

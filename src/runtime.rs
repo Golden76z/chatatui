@@ -38,8 +38,12 @@ pub struct Runtime {
     backends: stream_task::Backends,
     /// Provider ids in display order (for the model list).
     provider_order: Vec<String>,
-    /// Cancellation handle of the running streaming task.
-    running_task: Option<(RequestId, CancellationToken)>,
+    /// Cancellation handle of the running streaming task, and where its tool decisions go.
+    running_task: Option<(
+        RequestId,
+        CancellationToken,
+        tokio::sync::mpsc::UnboundedSender<bool>,
+    )>,
     /// Storage worker; `None` once shut down.
     store: Option<StoreHandle>,
     /// What `/index` needs.
@@ -279,16 +283,18 @@ impl Runtime {
         match effect {
             Effect::StartCompletion(job) => {
                 // Only one generation at a time: stop any leftover task first.
-                if let Some((_, token)) = self.running_task.take() {
+                if let Some((_, token, _)) = self.running_task.take() {
                     token.cancel();
                 }
                 let token = CancellationToken::new();
-                self.running_task = Some((job.request_id, token.clone()));
-                tokio::spawn(stream_task::run(
+                let (decisions, answers) = tokio::sync::mpsc::unbounded_channel();
+                self.running_task = Some((job.request_id, token.clone(), decisions));
+                tokio::spawn(stream_task::run_with_tools(
                     self.backends.clone(),
                     job,
                     token,
                     self.events.sender(),
+                    Some(answers),
                 ));
             }
             Effect::ListModels => {
@@ -408,12 +414,20 @@ impl Runtime {
                 }
             }
             Effect::CancelCompletion(request_id) => {
-                if let Some((id, token)) = self.running_task.take() {
+                if let Some((id, token, decisions)) = self.running_task.take() {
                     if id == request_id {
                         token.cancel();
                     } else {
-                        self.running_task = Some((id, token));
+                        self.running_task = Some((id, token, decisions));
                     }
+                }
+            }
+            Effect::ToolDecision { request_id, allow } => {
+                if let Some((id, _, decisions)) = &self.running_task
+                    && *id == request_id
+                {
+                    // Fails only if the task already ended.
+                    let _ = decisions.send(allow);
                 }
             }
         }

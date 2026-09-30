@@ -38,6 +38,11 @@ compact_threshold = 90
 # next message.
 auto_compact = false
 
+# Tools the model may call (read a file, list a folder, search your documents); each
+# call is confirmed. Not every model supports tools: turn them on with /tools on.
+# [tools]
+# enabled = false
+
 # Named system prompts, chosen per conversation with /persona <name>:
 # [prompts]
 # prof = "Tu es un professeur de Rust patient. Explique pas à pas, avec des exemples."
@@ -236,6 +241,15 @@ fn presets() -> Vec<(&'static str, ProviderConfig)> {
     ]
 }
 
+/// `[tools]` section.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ToolsConfig {
+    /// Offer the tools from the start (otherwise `/tools on`). Not every model supports
+    /// them; each call is confirmed anyway.
+    pub enabled: bool,
+}
+
 /// Application configuration. Missing keys fall back to their defaults.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -250,6 +264,8 @@ pub struct Config {
     pub compact_threshold: u8,
     /// Past `compact_threshold`, run `/compact` before sending the next message.
     pub auto_compact: bool,
+    /// `[tools]` section: tools the model may call.
+    pub tools: ToolsConfig,
     /// `[prompts]` section: named system prompts (`/persona <name>`).
     pub prompts: BTreeMap<String, String>,
     /// `[rag]` section: document search settings.
@@ -282,6 +298,7 @@ impl Default for Config {
             theme: crate::theme::ThemeName::Auto,
             compact_threshold: 90,
             auto_compact: false,
+            tools: ToolsConfig::default(),
             prompts: BTreeMap::new(),
             rag: crate::rag::RagConfig::default(),
             providers: BTreeMap::from([("ollama".to_owned(), ollama)]),

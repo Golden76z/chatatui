@@ -20,6 +20,7 @@ pub enum CommandId {
     Delete,
     Copy,
     Persona,
+    Tools,
     Edit,
     Retry,
     Export,
@@ -218,6 +219,15 @@ pub const COMMANDS: &[CommandSpec] = &[
         aliases: &["role", "rôle"],
         arg: Arg::Optional("[nom|off]"),
         description: "Choisir un prompt système nommé ([prompts] dans la config)",
+        shortcut: None,
+        legacy_shortcut: None,
+    },
+    CommandSpec {
+        id: CommandId::Tools,
+        name: "tools",
+        aliases: &["outils"],
+        arg: Arg::Optional("[on|off]"),
+        description: "Laisser le modèle lire des fichiers et chercher dans vos documents",
         shortcut: None,
         legacy_shortcut: None,
     },
@@ -472,7 +482,7 @@ mod tests {
         );
         assert_eq!(
             names(&search("/mod")),
-            vec!["model", "prompt", "edit", "retry"],
+            vec!["model", "prompt", "tools", "edit", "retry"],
             "« modèle » in a description"
         );
         assert_eq!(search("").len(), COMMANDS.len());

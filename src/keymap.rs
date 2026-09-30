@@ -47,6 +47,23 @@ pub fn map_key(key: KeyEvent, context: KeyContext) -> Option<Action> {
                 _ => None,
             };
         }
+        Some(OverlayKind::Confirm) => {
+            return match key.code {
+                KeyCode::Enter | KeyCode::Char('o' | 'y') => Some(Action::ToolAnswer {
+                    allow: true,
+                    always: false,
+                }),
+                KeyCode::Char('t' | 'a') => Some(Action::ToolAnswer {
+                    allow: true,
+                    always: true,
+                }),
+                KeyCode::Esc | KeyCode::Char('n') => Some(Action::ToolAnswer {
+                    allow: false,
+                    always: false,
+                }),
+                _ => None,
+            };
+        }
         Some(OverlayKind::Text) => {
             return match key.code {
                 KeyCode::Up => Some(Action::OverlayUp),

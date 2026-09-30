@@ -164,6 +164,7 @@ pub fn message_lines(message: &Message, width: usize) -> Vec<Line<'static>> {
         Role::Assistant | Role::Summary => markdown::render(&message.content, width),
         Role::User | Role::System => plain(&message.content, width),
         Role::Attachment => attachment_card(message, width),
+        Role::Tool => tool_card(message, width),
     };
 
     let dim = Style::default().fg(crate::theme::palette().dim);
@@ -215,11 +216,37 @@ fn header(role: Role) -> Line<'static> {
         Role::Assistant => ("Assistant", crate::theme::palette().assistant),
         Role::Attachment => ("Fichier joint", crate::theme::palette().warn),
         Role::Summary => ("Résumé de la conversation", crate::theme::palette().info),
+        Role::Tool => ("Outil", crate::theme::palette().warn),
     };
     Line::styled(
         format!("▌ {label}"),
         Style::default().fg(color).add_modifier(Modifier::BOLD),
     )
+}
+
+/// A tool call is shown as a one-line card: what it did and how much it returned.
+fn tool_card(message: &Message, width: usize) -> Vec<Line<'static>> {
+    let palette = crate::theme::palette();
+    let what = message.source.as_deref().unwrap_or("outil");
+    let (text, color) = match &message.status {
+        MessageStatus::Streaming => (
+            format!("🔧 {what} · en attente de votre accord…"),
+            palette.warn,
+        ),
+        MessageStatus::Complete => (
+            format!(
+                "🔧 {what} · ≈ {} tokens transmis",
+                tokens::format_count(tokens::estimate(&message.content))
+            ),
+            palette.warn,
+        ),
+        MessageStatus::Failed(reason) => (format!("🔧 {what} · {reason}"), palette.dim),
+        MessageStatus::Cancelled => (format!("🔧 {what} · annulé"), palette.dim),
+    };
+    wrap_spans(&[Span::styled(text, Style::default().fg(color))], width)
+        .into_iter()
+        .map(Line::from)
+        .collect()
 }
 
 /// An attachment is shown as a one-line card, not its whole text.

@@ -19,6 +19,11 @@ pub fn markdown(title: &str, model: &str, messages: &[Message]) -> String {
             Role::Assistant => "Assistant",
             Role::System => "Système",
             Role::Summary => "Résumé de la conversation",
+            Role::Tool => {
+                let what = message.source.as_deref().unwrap_or("outil");
+                out.push_str(&format!("\n> 🔧 Outil : {what}\n"));
+                continue;
+            }
             Role::Attachment => {
                 let source = message.source.as_deref().unwrap_or("fichier");
                 out.push_str(&format!(

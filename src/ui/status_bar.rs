@@ -91,8 +91,15 @@ fn with_gauge(app: &App, mut line: Line<'static>) -> Line<'static> {
     line
 }
 
-/// Appends the named system prompt (`✦ prof`) when one is chosen.
+/// Appends the named system prompt (`✦ prof`) when one is chosen, and `🔧` when the
+/// model may call tools.
 fn with_persona(app: &App, mut line: Line<'static>) -> Line<'static> {
+    if app.tools_enabled {
+        line.push_span(Span::styled(
+            " 🔧",
+            Style::default().fg(crate::theme::palette().warn),
+        ));
+    }
     if let Some(persona) = &app.persona {
         line.push_span(Span::styled(
             format!(" ✦ {persona}"),
@@ -157,6 +164,12 @@ fn hint_candidates(app: &App) -> Vec<String> {
         "Alt+Entrée"
     };
     match &app.overlay {
+        Some(Overlay::ToolConfirm { .. }) => {
+            return vec![
+                "Entrée autoriser · t toujours · Échap refuser ".into(),
+                "Entrée · t · Échap ".into(),
+            ];
+        }
         Some(Overlay::ModelPicker(_) | Overlay::Palette(_)) => {
             return vec![
                 "↑↓ choisir · Entrée valider · Échap fermer ".into(),

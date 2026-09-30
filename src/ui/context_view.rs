@@ -228,6 +228,7 @@ pub fn lines(app: &App, width: usize) -> Vec<Line<'static>> {
                 Role::System => "Système",
                 Role::Attachment => "Fichier",
                 Role::Summary => "Résumé",
+                Role::Tool => "Outil",
             };
             let head = format!("   #{:<3} {who:<10}{:>8}  ", index + 1, format_count(count));
             let room = width

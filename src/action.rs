@@ -81,6 +81,8 @@ pub enum Action {
     CollectionsChanged(Vec<String>),
     /// Result of [`Effect::Export`]: the path written, or a user-facing error.
     Exported(Result<String, String>),
+    /// Answer to a tool call: `always` allows the next ones of this conversation too.
+    ToolAnswer { allow: bool, always: bool },
     /// Ctrl+Y: copy the last reply.
     CopyLastReply,
     /// Text was handed to the clipboard (`what` describes it).
@@ -170,6 +172,8 @@ pub enum Effect {
     },
     /// Stop the running indexing job.
     CancelIndex,
+    /// Tell the streaming task whether the pending tool call may run.
+    ToolDecision { request_id: RequestId, allow: bool },
     /// Compare the collections' folders with their index.
     CheckCollections,
 }

@@ -54,11 +54,27 @@ pub fn build_messages(
             Role::System => ChatRole::System,
             Role::User => ChatRole::User,
             Role::Assistant => ChatRole::Assistant,
+            // Past tool results are replayed as plain text: their call ids belong to the
+            // request that made them.
+            Role::Tool => return Some(ChatMessage::new(ChatRole::Assistant, tool_note(m))),
             Role::Attachment | Role::Summary => return None,
         };
         Some(ChatMessage::new(role, m.content.clone()))
     }));
     messages
+}
+
+/// Characters of a past tool result replayed in later requests.
+const TOOL_NOTE_CHARS: usize = 8_000;
+
+/// A past tool result as the assistant's note: `[outil : lire a.md]` and its output.
+fn tool_note(message: &Message) -> String {
+    let what = message.source.as_deref().unwrap_or("outil");
+    let mut output: String = message.content.chars().take(TOOL_NOTE_CHARS).collect();
+    if output.len() < message.content.len() {
+        output.push_str("\n[…]");
+    }
+    format!("[outil : {what}]\n{output}")
 }
 
 /// An attachment whose text goes into the prompt as a numbered source.
@@ -90,6 +106,10 @@ pub fn build_summary_request(history: &[Message]) -> Vec<ChatMessage> {
             Role::Assistant => "Assistant".to_owned(),
             Role::System => "System".to_owned(),
             Role::Summary => "Summary of earlier messages".to_owned(),
+            Role::Tool => format!(
+                "Tool result ({})",
+                message.source.as_deref().unwrap_or_default()
+            ),
             Role::Attachment => format!(
                 "Attached file {}",
                 message.source.as_deref().unwrap_or_default()

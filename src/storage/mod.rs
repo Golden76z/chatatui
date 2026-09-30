@@ -566,6 +566,7 @@ fn encode_role(role: Role) -> &'static str {
         Role::Assistant => "assistant",
         Role::Attachment => "attachment",
         Role::Summary => "summary",
+        Role::Tool => "tool",
     }
 }
 
@@ -576,6 +577,7 @@ fn decode_role(role: &str) -> Result<Role, StoreError> {
         "assistant" => Ok(Role::Assistant),
         "attachment" => Ok(Role::Attachment),
         "summary" => Ok(Role::Summary),
+        "tool" => Ok(Role::Tool),
         other => Err(corrupt("role", &other)),
     }
 }

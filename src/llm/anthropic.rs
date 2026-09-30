@@ -66,34 +66,72 @@ impl AnthropicClient {
 }
 
 /// A message in the Messages API format.
-#[derive(Debug, PartialEq, Eq, Serialize)]
-struct WireMessage<'a> {
+#[derive(Debug, PartialEq, Serialize)]
+struct WireMessage {
     role: &'static str,
-    content: &'a str,
+    /// A plain string, or content blocks (tool use and results).
+    content: serde_json::Value,
 }
 
 /// Splits chat messages into the top-level `system` text and the user/assistant turns.
-fn to_wire(messages: &[ChatMessage]) -> (String, Vec<WireMessage<'_>>) {
+/// Tool calls become `tool_use` blocks of the assistant turn; their results
+/// `tool_result` blocks of the next user turn (consecutive results share one turn).
+fn to_wire(messages: &[ChatMessage]) -> (String, Vec<WireMessage>) {
     let system = messages
         .iter()
         .filter(|m| m.role == ChatRole::System)
         .map(|m| m.content.as_str())
         .collect::<Vec<_>>()
         .join("\n\n");
-    let turns = messages
-        .iter()
-        .filter_map(|m| {
-            let role = match m.role {
-                ChatRole::System => return None,
-                ChatRole::User => "user",
-                ChatRole::Assistant => "assistant",
-            };
-            Some(WireMessage {
-                role,
-                content: &m.content,
-            })
-        })
-        .collect();
+    let mut turns: Vec<WireMessage> = Vec::new();
+    for m in messages {
+        match m.role {
+            ChatRole::System => {}
+            ChatRole::User => turns.push(WireMessage {
+                role: "user",
+                content: json!(m.content),
+            }),
+            ChatRole::Assistant if m.tool_calls.is_empty() => turns.push(WireMessage {
+                role: "assistant",
+                content: json!(m.content),
+            }),
+            ChatRole::Assistant => {
+                let mut blocks = Vec::new();
+                if !m.content.trim().is_empty() {
+                    blocks.push(json!({ "type": "text", "text": m.content }));
+                }
+                for call in &m.tool_calls {
+                    let input: serde_json::Value =
+                        serde_json::from_str(&call.arguments).unwrap_or_else(|_| json!({}));
+                    blocks.push(json!({
+                        "type": "tool_use", "id": call.id, "name": call.name, "input": input,
+                    }));
+                }
+                turns.push(WireMessage {
+                    role: "assistant",
+                    content: json!(blocks),
+                });
+            }
+            ChatRole::Tool => {
+                let block = json!({
+                    "type": "tool_result",
+                    "tool_use_id": m.tool_call_id.clone().unwrap_or_default(),
+                    "content": m.content,
+                });
+                match turns.last_mut() {
+                    Some(last) if last.role == "user" && last.content.is_array() => {
+                        if let Some(blocks) = last.content.as_array_mut() {
+                            blocks.push(block);
+                        }
+                    }
+                    _ => turns.push(WireMessage {
+                        role: "user",
+                        content: json!([block]),
+                    }),
+                }
+            }
+        }
+    }
     (system, turns)
 }
 
@@ -109,6 +147,20 @@ impl LlmClient for AnthropicClient {
         });
         if !system.is_empty() {
             body["system"] = json!(system);
+        }
+        if !request.tools.is_empty() {
+            body["tools"] = json!(
+                request
+                    .tools
+                    .iter()
+                    .map(|t| json!({
+                        "name": t.name,
+                        "description": t.description,
+                        "input_schema": serde_json::from_str::<serde_json::Value>(t.parameters)
+                            .unwrap_or_else(|_| json!({ "type": "object" })),
+                    }))
+                    .collect::<Vec<_>>()
+            );
         }
         let post = self.http.post(self.endpoint.url("/messages"));
         let response = self.endpoint.send(self.authorize(post).json(&body)).await?;
@@ -183,7 +235,14 @@ fn decode(data: &str) -> Result<Decoded, LlmError> {
         MessageStart {
             message: StartMessage,
         },
+        ContentBlockStart {
+            #[serde(default)]
+            index: usize,
+            content_block: Block,
+        },
         ContentBlockDelta {
+            #[serde(default)]
+            index: usize,
             delta: Delta,
         },
         MessageDelta {
@@ -203,8 +262,19 @@ fn decode(data: &str) -> Result<Decoded, LlmError> {
     #[derive(Deserialize)]
     #[serde(tag = "type", rename_all = "snake_case")]
     enum Delta {
-        TextDelta {
-            text: String,
+        #[serde(rename = "text_delta")]
+        Text { text: String },
+        #[serde(rename = "input_json_delta")]
+        InputJson { partial_json: String },
+        #[serde(other)]
+        Other,
+    }
+    #[derive(Deserialize)]
+    #[serde(tag = "type", rename_all = "snake_case")]
+    enum Block {
+        ToolUse {
+            id: String,
+            name: String,
         },
         #[serde(other)]
         Other,
@@ -240,9 +310,34 @@ fn decode(data: &str) -> Result<Decoded, LlmError> {
             }
         }
         Event::ContentBlockDelta {
-            delta: Delta::TextDelta { text },
+            delta: Delta::Text { text },
+            ..
         } if !text.is_empty() => Decoded {
             items: vec![StreamItem::Text(text)],
+            done: false,
+        },
+        Event::ContentBlockStart {
+            index,
+            content_block: Block::ToolUse { id, name },
+        } => Decoded {
+            items: vec![StreamItem::ToolCallDelta {
+                index,
+                id: Some(id),
+                name: Some(name),
+                arguments: String::new(),
+            }],
+            done: false,
+        },
+        Event::ContentBlockDelta {
+            index,
+            delta: Delta::InputJson { partial_json },
+        } => Decoded {
+            items: vec![StreamItem::ToolCallDelta {
+                index,
+                id: None,
+                name: None,
+                arguments: partial_json,
+            }],
             done: false,
         },
         Event::MessageDelta { usage: Some(usage) } => Decoded {
@@ -257,9 +352,10 @@ fn decode(data: &str) -> Result<Decoded, LlmError> {
             done: true,
         },
         Event::Error { error } => return Err(LlmError::Server(error.message)),
-        Event::ContentBlockDelta { .. } | Event::MessageDelta { usage: None } | Event::Other => {
-            Decoded::default()
-        }
+        Event::ContentBlockDelta { .. }
+        | Event::ContentBlockStart { .. }
+        | Event::MessageDelta { usage: None }
+        | Event::Other => Decoded::default(),
     };
     Ok(decoded)
 }
@@ -343,5 +439,65 @@ mod tests {
         assert_eq!(system, "Be brief.");
         let roles: Vec<&str> = turns.iter().map(|t| t.role).collect();
         assert_eq!(roles, ["user", "assistant", "user"]);
+    }
+
+    #[tokio::test]
+    async fn tool_use_blocks_become_tool_call_deltas() {
+        let input = concat!(
+            "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"list_dir\",\"input\":{}}}\n\n",
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"path\\\": \\\"~\\\"}\"}}\n\n",
+            "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+        );
+        let items = collect(input, 7).await;
+        assert_eq!(
+            items,
+            vec![
+                Ok(StreamItem::ToolCallDelta {
+                    index: 1,
+                    id: Some("toolu_1".into()),
+                    name: Some("list_dir".into()),
+                    arguments: String::new()
+                }),
+                Ok(StreamItem::ToolCallDelta {
+                    index: 1,
+                    id: None,
+                    name: None,
+                    arguments: "{\"path\": \"~\"}".into()
+                }),
+            ]
+        );
+    }
+
+    #[test]
+    fn tool_results_follow_the_tool_use_turn() {
+        use crate::llm::ToolCall;
+        let calls = vec![
+            ToolCall {
+                id: "a".into(),
+                name: "read_file".into(),
+                arguments: "{\"path\":\"x\"}".into(),
+            },
+            ToolCall {
+                id: "b".into(),
+                name: "list_dir".into(),
+                arguments: "{}".into(),
+            },
+        ];
+        let (_, turns) = to_wire(&[
+            ChatMessage::new(ChatRole::User, "Lis x"),
+            ChatMessage::tool_request("Je regarde.", calls),
+            ChatMessage::tool_result("a", "contenu"),
+            ChatMessage::tool_result("b", "fichiers"),
+        ]);
+        let roles: Vec<&str> = turns.iter().map(|t| t.role).collect();
+        assert_eq!(roles, ["user", "assistant", "user"]);
+        assert_eq!(turns[1].content[1]["type"], "tool_use");
+        assert_eq!(turns[1].content[1]["input"]["path"], "x");
+        assert_eq!(
+            turns[2].content.as_array().map(Vec::len),
+            Some(2),
+            "one turn for both"
+        );
+        assert_eq!(turns[2].content[0]["tool_use_id"], "a");
     }
 }

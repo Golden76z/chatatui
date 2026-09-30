@@ -1,0 +1,20 @@
+---
+source: src/ui/mod.rs
+expression: "draw(&mut app, 80, 16).backend()"
+---
+" ▌ Vous                                                                         "
+" Que dit mon plan ?                                                             "
+"                                                                                "
+" ▌ Assistant                                                                    "
+" Je regarde.                                                                    "
+"                ╭ Autoriser l'outil ? ──────────────────────────╮               "
+" ▌ Outil        │ Le modèle veut lire ~/cours/plan.md           │               "
+" 🔧 lire ~/cours│ outil : read_file                             │               " Hidden by multi-width symbols: [(2, " ")]
+"                │                                               │               "
+"                │ Entrée autoriser   t toujours   Échap refuser │               "
+"                ╰───────────────────────────────────────────────╯               "
+"                                                                                "
+"╭ Message ─────────────────────────────────────────────────────────────────────╮"
+"│ Écrivez votre message…                                                       │"
+"╰──────────────────────────────────────────────────────────────────────────────╯"
+" ◐ Génération… │ Ollama › llama3.2 🔧 │ ctx ≈39              Entrée · t · Échap " Hidden by multi-width symbols: [(36, " ")]

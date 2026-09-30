@@ -321,6 +321,10 @@ pub struct App {
     queued: Option<String>,
     /// User message being edited (`/edit`): sending replaces it and what followed.
     pub editing: Option<MessageId>,
+    /// Offer tools to the model (`/tools`).
+    pub tools_enabled: bool,
+    /// Tool calls of this conversation run without asking (`t` in the confirmation).
+    tools_always: bool,
     /// Deletion waiting for its command to be run again (`/forget`, `/delete`).
     pending_confirm: Option<Confirm>,
     /// Token counts of the last completed request of this conversation.
@@ -390,6 +394,8 @@ impl App {
             auto_compact: config.auto_compact,
             queued: None,
             editing: None,
+            tools_enabled: config.tools.enabled,
+            tools_always: false,
             request_usage: Usage::default(),
             session_seed: 0,
             next_conversation: 0,
@@ -741,7 +747,8 @@ impl App {
                     self.overlay = None;
                     Vec::new()
                 }
-                None => Vec::new(),
+                // Answered with ToolAnswer.
+                Some(Overlay::ToolConfirm { .. }) | None => Vec::new(),
             },
             Action::ModelsListed(results) => {
                 let providers = self.providers.clone();
@@ -805,6 +812,22 @@ impl App {
             }
             Action::FileRead(result) => self.on_file_read(result),
             Action::CopyLastReply => self.run_command(CommandId::Copy, ""),
+            Action::ToolAnswer { allow, always } => {
+                if !matches!(self.overlay, Some(Overlay::ToolConfirm { .. })) {
+                    return Vec::new();
+                }
+                self.overlay = None;
+                if always {
+                    self.tools_always = true;
+                }
+                match self.generation {
+                    Some(generation) => vec![Effect::ToolDecision {
+                        request_id: generation.request_id,
+                        allow,
+                    }],
+                    None => Vec::new(),
+                }
+            }
             Action::CollectionsChanged(names) => {
                 if !self.rag.auto_index {
                     return Vec::new();
@@ -1016,6 +1039,25 @@ impl App {
             CommandId::Rename => self.rename_current(arg.trim()),
             CommandId::Copy => self.copy(arg.trim()),
             CommandId::Persona => self.choose_persona(arg.trim()),
+            CommandId::Tools => {
+                self.tools_enabled = match arg.trim() {
+                    "on" | "oui" => true,
+                    "off" | "non" => false,
+                    "" => !self.tools_enabled,
+                    _ => {
+                        self.status = Status::Error("usage : /tools [on|off]".into());
+                        return Vec::new();
+                    }
+                };
+                self.status = Status::Info(if self.tools_enabled {
+                    "outils activés : le modèle pourra lire des fichiers et chercher dans vos \
+                     documents (avec votre accord)"
+                        .into()
+                } else {
+                    "outils désactivés".into()
+                });
+                Vec::new()
+            }
             CommandId::Edit => self.start_edit(),
             CommandId::Retry => self.retry(arg.trim()),
             CommandId::Export => self.export(arg.trim()),
@@ -1274,6 +1316,7 @@ impl App {
                 JobKind::Reply => self.rag_collection.clone(),
                 JobKind::Summary => None,
             },
+            tools: kind == JobKind::Reply && self.tools_enabled,
         };
         let message_id = self.conversation.push(role, "", MessageStatus::Streaming);
         // Sending a message brings the view back to the latest content.
@@ -1926,6 +1969,9 @@ impl App {
         let Some(generation) = self.generation else {
             return Vec::new();
         };
+        if matches!(self.overlay, Some(Overlay::ToolConfirm { .. })) {
+            self.overlay = None;
+        }
         let mut effects = vec![Effect::CancelCompletion(generation.request_id)];
         effects.extend(self.finish_generation(MessageStatus::Cancelled));
         self.status = Status::Ready;
@@ -1941,6 +1987,68 @@ impl App {
                 "{reason} : message non envoyé (il est dans la zone de saisie)"
             ));
         }
+    }
+
+    /// The model asks to run a tool: closes the reply so far, shows the call as a card
+    /// and asks the user (unless they allowed every call of this conversation).
+    fn on_tool_call(&mut self, generation: Generation, call: &crate::llm::ToolCall) -> Vec<Effect> {
+        let mut effects = Vec::new();
+        let written = self
+            .conversation
+            .get_mut(generation.message_id)
+            .map(|m| {
+                m.status = MessageStatus::Complete;
+                !m.content.trim().is_empty()
+            })
+            .unwrap_or(false);
+        if written {
+            effects.extend(self.save(generation.message_id));
+        } else {
+            // Nothing written before the call: no empty reply in the transcript.
+            self.conversation.truncate(generation.message_id);
+        }
+        let description = crate::tools::describe(call);
+        let id = self.conversation.push_tool(&description);
+        self.generation = Some(Generation {
+            message_id: id,
+            ..generation
+        });
+        if self.tools_always {
+            effects.push(Effect::ToolDecision {
+                request_id: generation.request_id,
+                allow: true,
+            });
+        } else {
+            self.overlay = Some(Overlay::ToolConfirm {
+                description,
+                tool: call.name.clone(),
+                cloud: !self.is_local(),
+            });
+        }
+        effects
+    }
+
+    /// A tool ran: records its output and starts a new reply message for what follows.
+    fn on_tool_result(&mut self, generation: Generation, ok: bool, output: String) -> Vec<Effect> {
+        if let Some(message) = self.conversation.get_mut(generation.message_id) {
+            message.status = if ok {
+                MessageStatus::Complete
+            } else {
+                MessageStatus::Failed(output.lines().next().unwrap_or("refusé").to_owned())
+            };
+            message.content = output;
+        }
+        self.transcript.invalidate(generation.message_id);
+        let effects: Vec<Effect> = self.save(generation.message_id).into_iter().collect();
+        let reply = self
+            .conversation
+            .push(Role::Assistant, "", MessageStatus::Streaming);
+        self.generation = Some(Generation {
+            message_id: reply,
+            ..generation
+        });
+        self.scroll.to_bottom();
+        effects
     }
 
     /// Clears the running generation, sets the final status of its message and saves it.
@@ -1991,6 +2099,12 @@ impl App {
                 });
                 Vec::new()
             }
+            LlmEvent::ToolCall(call) => self.on_tool_call(generation, &call),
+            LlmEvent::ToolResult {
+                call_id: _,
+                ok,
+                output,
+            } => self.on_tool_result(generation, ok, output),
             LlmEvent::Usage(usage) => {
                 self.request_usage = Usage {
                     input_tokens: usage.input_tokens.or(self.request_usage.input_tokens),
@@ -2271,6 +2385,7 @@ impl App {
         self.conversation = conversation;
         self.measured = None;
         self.editing = None;
+        self.tools_always = false;
         // The collection carries over to a new conversation (`load` sets its own).
         self.retrieved = None;
         self.conversation_id = id;

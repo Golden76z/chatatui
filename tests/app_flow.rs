@@ -33,6 +33,8 @@ struct Harness {
     tx: mpsc::UnboundedSender<Event>,
     rx: mpsc::UnboundedReceiver<Event>,
     cancel: Option<CancellationToken>,
+    /// Where the answers to tool calls go (for the running job).
+    decisions: Option<mpsc::UnboundedSender<bool>>,
     store: Store,
     /// Database file shared by the store and the indexer (`None`: in-memory store).
     database: Option<std::path::PathBuf>,
@@ -60,6 +62,7 @@ impl Harness {
             tx,
             rx,
             cancel: None,
+            decisions: None,
             store: Store::open_in_memory().expect("in-memory store"),
             database: None,
             index_cancel: None,
@@ -107,12 +110,20 @@ impl Harness {
                 Effect::StartCompletion(job) => {
                     let token = CancellationToken::new();
                     self.cancel = Some(token.clone());
-                    tokio::spawn(stream_task::run(
+                    let (decisions, answers) = mpsc::unbounded_channel();
+                    self.decisions = Some(decisions);
+                    tokio::spawn(stream_task::run_with_tools(
                         self.backends.clone(),
                         job,
                         token,
                         self.tx.clone(),
+                        Some(answers),
                     ));
+                }
+                Effect::ToolDecision { allow, .. } => {
+                    if let Some(decisions) = &self.decisions {
+                        let _ = decisions.send(allow);
+                    }
                 }
                 Effect::CheckCollections => {
                     let database = self.database.clone()?;
@@ -989,4 +1000,98 @@ async fn keywords_find_codes_changes_are_noticed_and_forget_deletes() {
     assert_eq!(h.app.rag_collection, None);
     h.command("/collections");
     assert_eq!(h.app.collections.as_ref().map(|c| c.0.len()), Some(0));
+}
+
+#[tokio::test]
+async fn the_model_reads_a_file_once_allowed() {
+    use chatatui::{llm::ToolCall, state::Overlay};
+    let dir = tempfile::tempdir().expect("temp dir");
+    let file = dir.path().join("plan.md");
+    std::fs::write(&file, "Séance 3 : les traits.").expect("write");
+    let call = ToolCall {
+        id: "call_1".into(),
+        name: "read_file".into(),
+        arguments: format!(r#"{{"path":"{}"}}"#, file.display()),
+    };
+    let llm = Arc::new(MockLlmClient::new([
+        MockReply::ToolCalls(vec!["Je regarde.".into()], vec![call.clone()]),
+        MockReply::tokens(&["La séance 3 porte sur les traits."]),
+        MockReply::ToolCalls(
+            Vec::new(),
+            vec![ToolCall {
+                id: "call_2".into(),
+                ..call
+            }],
+        ),
+        MockReply::tokens(&["Sans le fichier, je ne sais pas."]),
+    ]));
+    let mut h = Harness::new(llm.clone());
+    h.command("/tools on");
+    assert!(h.app.tools_enabled);
+
+    h.send("Que dit mon plan ?");
+    while !matches!(h.app.overlay, Some(Overlay::ToolConfirm { .. })) {
+        h.step().await;
+    }
+    assert!(!llm.requests()[0].tools.is_empty(), "tools offered");
+    h.dispatch(Action::ToolAnswer {
+        allow: true,
+        always: false,
+    });
+    h.run_until_idle().await;
+
+    let roles: Vec<Role> = h
+        .app
+        .conversation
+        .messages()
+        .iter()
+        .map(|m| m.role)
+        .collect();
+    assert_eq!(
+        roles,
+        vec![Role::User, Role::Assistant, Role::Tool, Role::Assistant]
+    );
+    let tool = &h.app.conversation.messages()[2];
+    assert_eq!(tool.content, "Séance 3 : les traits.");
+    assert!(
+        tool.source
+            .as_deref()
+            .is_some_and(|s| s.starts_with("lire "))
+    );
+    let second = &llm.requests()[1];
+    let last = second.messages.last().expect("tool result");
+    assert_eq!(last.tool_call_id.as_deref(), Some("call_1"));
+    assert_eq!(last.content, "Séance 3 : les traits.");
+
+    // Refused: the model is told and answers without it.
+    h.send("Et la séance 4 ?");
+    while !matches!(h.app.overlay, Some(Overlay::ToolConfirm { .. })) {
+        h.step().await;
+    }
+    h.dispatch(Action::ToolAnswer {
+        allow: false,
+        always: false,
+    });
+    h.run_until_idle().await;
+    let refused = &llm.requests()[3];
+    assert!(
+        refused
+            .messages
+            .last()
+            .expect("result")
+            .content
+            .contains("refused")
+    );
+    let messages = h.app.conversation.messages();
+    assert!(matches!(
+        messages[messages.len() - 2].status,
+        MessageStatus::Failed(_)
+    ));
+    // The first file read is replayed as plain text in later requests.
+    assert!(
+        refused
+            .messages
+            .iter()
+            .any(|m| m.content.starts_with("[outil : lire "))
+    );
 }

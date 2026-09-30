@@ -125,6 +125,7 @@ tests/      app_flow.rs http_clients.rs fixtures/*.sse
 | J17 ✅ | `/edit` last message and resend, `/retry [model]`, `/export [file.md]` to Markdown |
 | J18 ✅ | Comfort: `theme = auto\|dark\|light` (semantic palette, code theme), named system prompts `[prompts]` + `/persona` per conversation |
 | J19 ✅ | RAG: re-ranking through `/v1/rerank` (`rerank_model`, falls back to hybrid order), folders watched while running with `auto_index` (notify, debounced) |
+| J20 ✅ | Tool calling: `read_file`, `list_dir`, `search_documents`; OpenAI and Anthropic formats; each call confirmed (Enter / t always / Esc), secrets refused; `/tools on\|off` |
 
 Each milestone ends with `cargo fmt`, `cargo clippy --all-targets -- -D warnings`,
 `cargo test` passing.

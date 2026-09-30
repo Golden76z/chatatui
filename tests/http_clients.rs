@@ -107,6 +107,7 @@ fn request() -> ChatRequest {
             ChatMessage::new(ChatRole::System, "Be brief."),
             ChatMessage::new(ChatRole::User, "Salut"),
         ],
+        tools: Vec::new(),
     }
 }
 
@@ -127,7 +128,7 @@ fn texts(items: &[StreamItem]) -> String {
         .iter()
         .filter_map(|i| match i {
             StreamItem::Text(t) => Some(t.as_str()),
-            StreamItem::Usage(_) => None,
+            _ => None,
         })
         .collect()
 }

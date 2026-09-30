@@ -30,5 +30,6 @@ pub mod storage;
 pub mod terminal;
 pub mod theme;
 pub mod tokens;
+pub mod tools;
 pub mod transcript;
 pub mod ui;

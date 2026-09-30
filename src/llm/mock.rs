@@ -26,6 +26,8 @@ pub enum MockReply {
     TokensThenHang(Vec<String>),
     /// Fails before streaming (e.g. server unreachable).
     Fail(LlmError),
+    /// Streams these tokens, then asks for these tool calls.
+    ToolCalls(Vec<String>, Vec<super::ToolCall>),
 }
 
 impl MockReply {
@@ -119,6 +121,30 @@ impl LlmClient for MockLlmClient {
                 (text(tokens), Some(Ok(StreamItem::Usage(usage))))
             }
             MockReply::TokensThenError(tokens, error) => (text(tokens), Some(Err(error))),
+            MockReply::ToolCalls(tokens, calls) => {
+                let mut items = text(tokens);
+                for (index, call) in calls.into_iter().enumerate() {
+                    // Split like a real server: id and name, then the arguments in two parts.
+                    let middle = call.arguments.len() / 2;
+                    let middle = (0..=middle)
+                        .rev()
+                        .find(|i| call.arguments.is_char_boundary(*i))
+                        .unwrap_or(0);
+                    items.push(Ok(StreamItem::ToolCallDelta {
+                        index,
+                        id: Some(call.id),
+                        name: Some(call.name),
+                        arguments: call.arguments[..middle].to_owned(),
+                    }));
+                    items.push(Ok(StreamItem::ToolCallDelta {
+                        index,
+                        id: None,
+                        name: None,
+                        arguments: call.arguments[middle..].to_owned(),
+                    }));
+                }
+                (items, None)
+            }
             MockReply::TokensThenHang(tokens) => {
                 let guard = DropGuard(self.dropped_streams.clone());
                 let s = stream::iter(text(tokens))

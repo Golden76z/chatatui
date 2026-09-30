@@ -48,6 +48,7 @@ pub fn lines(app: &App, width: usize) -> Vec<Line<'static>> {
             ChatRole::System => ("system", crate::theme::palette().dim),
             ChatRole::User => ("user", crate::theme::palette().accent),
             ChatRole::Assistant => ("assistant", crate::theme::palette().assistant),
+            ChatRole::Tool => ("tool", crate::theme::palette().warn),
         };
         lines.push(Line::from(vec![
             Span::styled(

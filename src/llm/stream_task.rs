@@ -7,10 +7,12 @@
 use std::sync::Arc;
 
 use futures::StreamExt;
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio_util::sync::CancellationToken;
 
-use super::{ChatRequest, Clients, LlmClient, LlmEvent, RequestId, StreamItem};
+use super::{
+    ChatMessage, ChatRequest, Clients, LlmClient, LlmEvent, RequestId, StreamItem, ToolCall,
+};
 use crate::{
     context::{ContextProvider, ContextQuery},
     event::{AppEvent, Event},
@@ -41,6 +43,8 @@ pub struct CompletionJob {
     pub history: Vec<Message>,
     /// Document collection searched for this reply (`/rag`), if any.
     pub rag_collection: Option<String>,
+    /// Offer the tools (`/tools on`); each call waits for the user's decision.
+    pub tools: bool,
 }
 
 /// Backends used by the streaming task.
@@ -71,12 +75,28 @@ impl std::fmt::Debug for Backends {
     }
 }
 
+/// Tool rounds (reply → calls → results → reply) allowed in one answer.
+const MAX_TOOL_ROUNDS: usize = 8;
+
 /// Runs a job until it completes, fails or is cancelled. Sends no event once cancelled.
+/// No tools are offered.
 pub async fn run(
     backends: Backends,
     job: CompletionJob,
     cancel: CancellationToken,
     events: UnboundedSender<Event>,
+) {
+    run_with_tools(backends, job, cancel, events, None).await;
+}
+
+/// [`run`], with the user's answers to tool calls (`true`: allowed) arriving on
+/// `decisions`, one per [`LlmEvent::ToolCall`]. Without it, tools are not offered.
+pub async fn run_with_tools(
+    backends: Backends,
+    job: CompletionJob,
+    cancel: CancellationToken,
+    events: UnboundedSender<Event>,
+    mut decisions: Option<UnboundedReceiver<bool>>,
 ) {
     let request_id = job.request_id;
     let send = |event: LlmEvent| {
@@ -87,12 +107,25 @@ pub async fn run(
         // `biased` so that a cancellation observed together with a token wins.
         biased;
         () = cancel.cancelled() => {}
-        () = generate(&backends, job, &send) => {}
+        () = generate(&backends, job, &send, decisions.as_mut()) => {}
     }
 }
 
-async fn generate(backends: &Backends, job: CompletionJob, send: &impl Fn(LlmEvent)) {
-    let messages = match job.kind {
+/// A tool call being received in pieces.
+#[derive(Default)]
+struct PartialCall {
+    id: String,
+    name: String,
+    arguments: String,
+}
+
+async fn generate(
+    backends: &Backends,
+    job: CompletionJob,
+    send: &impl Fn(LlmEvent),
+    mut decisions: Option<&mut UnboundedReceiver<bool>>,
+) {
+    let mut messages = match job.kind {
         JobKind::Reply => {
             let query = ContextQuery {
                 collection: job.rag_collection.as_deref(),
@@ -118,22 +151,97 @@ async fn generate(backends: &Backends, job: CompletionJob, send: &impl Fn(LlmEve
             job.provider
         )));
     };
-    let request = ChatRequest {
-        model: job.model,
-        messages,
+    let tools = if job.tools && job.kind == JobKind::Reply && decisions.is_some() {
+        crate::tools::specs()
+    } else {
+        Vec::new()
     };
-    let mut stream = match llm.chat_stream(request).await {
-        Ok(stream) => stream,
-        Err(error) => return send(LlmEvent::Error(error.to_string())),
-    };
-    while let Some(item) = stream.next().await {
-        match item {
-            Ok(StreamItem::Text(token)) => send(LlmEvent::Token(token)),
-            Ok(StreamItem::Usage(usage)) => send(LlmEvent::Usage(usage)),
+    for round in 0..MAX_TOOL_ROUNDS {
+        let request = ChatRequest {
+            model: job.model.clone(),
+            messages: messages.clone(),
+            tools: tools.clone(),
+        };
+        let mut stream = match llm.chat_stream(request).await {
+            Ok(stream) => stream,
             Err(error) => return send(LlmEvent::Error(error.to_string())),
+        };
+        let mut text = String::new();
+        let mut calls: std::collections::BTreeMap<usize, PartialCall> = Default::default();
+        while let Some(item) = stream.next().await {
+            match item {
+                Ok(StreamItem::Text(token)) => {
+                    text.push_str(&token);
+                    send(LlmEvent::Token(token));
+                }
+                Ok(StreamItem::Usage(usage)) => send(LlmEvent::Usage(usage)),
+                Ok(StreamItem::ToolCallDelta {
+                    index,
+                    id,
+                    name,
+                    arguments,
+                }) => {
+                    let call = calls.entry(index).or_default();
+                    call.id.extend(id);
+                    call.name.extend(name);
+                    call.arguments.push_str(&arguments);
+                }
+                Err(error) => return send(LlmEvent::Error(error.to_string())),
+            }
+        }
+        drop(stream);
+        let Some(decisions) = decisions.as_deref_mut().filter(|_| !calls.is_empty()) else {
+            return send(LlmEvent::Done);
+        };
+        let calls: Vec<ToolCall> = calls
+            .into_values()
+            .enumerate()
+            .map(|(i, c)| ToolCall {
+                // Some local servers leave the id out: make one up.
+                id: if c.id.is_empty() {
+                    format!("call_{round}_{i}")
+                } else {
+                    c.id
+                },
+                name: c.name,
+                arguments: if c.arguments.trim().is_empty() {
+                    "{}".into()
+                } else {
+                    c.arguments
+                },
+            })
+            .collect();
+        messages.push(ChatMessage::tool_request(text, calls.clone()));
+        for call in calls {
+            send(LlmEvent::ToolCall(call.clone()));
+            // The app is gone (shutting down) when the channel closes.
+            let Some(allowed) = decisions.recv().await else {
+                return;
+            };
+            let output = if allowed {
+                crate::tools::run(
+                    &call,
+                    backends.context.as_ref(),
+                    job.rag_collection.as_deref(),
+                )
+                .await
+            } else {
+                crate::tools::ToolOutput {
+                    ok: false,
+                    text: "The user refused this tool call. Answer without it, or ask them.".into(),
+                }
+            };
+            send(LlmEvent::ToolResult {
+                call_id: call.id.clone(),
+                ok: output.ok,
+                output: output.text.clone(),
+            });
+            messages.push(ChatMessage::tool_result(call.id, output.text));
         }
     }
-    send(LlmEvent::Done);
+    send(LlmEvent::Error(format!(
+        "trop d'appels d'outils d'affilée ({MAX_TOOL_ROUNDS})"
+    )))
 }
 
 #[cfg(test)]
@@ -164,6 +272,7 @@ mod tests {
             system_prompt: "Be brief.".into(),
             history: conversation.messages().to_vec(),
             rag_collection: None,
+            tools: false,
         }
     }
 

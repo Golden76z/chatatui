@@ -23,6 +23,14 @@ pub enum Overlay {
     Collections {
         scroll: u16,
     },
+    /// The model asks to run a tool: allow, always allow or refuse.
+    ToolConfirm {
+        /// What the call does (`lire ~/notes.md`).
+        description: String,
+        tool: String,
+        /// The result will be sent to a cloud provider.
+        cloud: bool,
+    },
 }
 
 /// How the keymap should treat the open popup.
@@ -32,6 +40,8 @@ pub enum OverlayKind {
     List,
     /// Read-only text: arrows scroll, most keys close.
     Text,
+    /// A question: Enter / `o` yes, `t` always, Esc / `n` no.
+    Confirm,
 }
 
 impl Overlay {
@@ -43,6 +53,7 @@ impl Overlay {
             | Self::Context { .. }
             | Self::Prompt { .. }
             | Self::Collections { .. } => OverlayKind::Text,
+            Self::ToolConfirm { .. } => OverlayKind::Confirm,
         }
     }
 
@@ -53,7 +64,7 @@ impl Overlay {
             | Self::Context { scroll }
             | Self::Prompt { scroll }
             | Self::Collections { scroll } => Some(scroll),
-            Self::ModelPicker(_) | Self::Palette(_) => None,
+            Self::ModelPicker(_) | Self::Palette(_) | Self::ToolConfirm { .. } => None,
         }
     }
 }

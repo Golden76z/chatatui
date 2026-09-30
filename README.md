@@ -172,6 +172,19 @@ with ☁ when the provider is in the cloud, since the passages then leave the ma
 collection: `cours › plan.docx`). `/rag off` stops; a new conversation keeps the current
 collections.
 
+### Tools
+
+With `/tools on` (or `[tools] enabled = true`), the model may call tools: `read_file`
+(a text file), `list_dir` (a folder) and `search_documents` (your indexed collections).
+Each call opens a question — `Enter` allows it, `t` allows every call of this
+conversation, `Esc` refuses (the model is told and answers without it) — and appears as a
+card in the conversation (`🔧 lire ~/notes.md · ≈ 350 tokens transmis`). Files that
+usually hold secrets (`~/.ssh`, `.env`, keys, credentials…) are refused whatever the
+answer. The popup warns when the result will go to a cloud provider. Tools use the
+OpenAI `tools` / `tool_calls` format (OpenAI, Ollama, llama.cpp, LM Studio, vLLM) or
+Claude's `tool_use` blocks; models without tool support reject the request, hence off by
+default.
+
 ## Commands
 
 Type `/` in the input to see the commands (↑↓ to choose, `Tab` to complete, `Enter` to
@@ -183,6 +196,7 @@ run), or press `Ctrl+P` for the palette:
 | `/history` | Conversation list (`Ctrl+L`) |
 | `/rename <title>` | Rename the conversation |
 | `/persona [name\|off]` | Use a named system prompt from `[prompts]` in this conversation, or go back to `system_prompt` |
+| `/tools [on\|off]` | Let the model read files, list folders and search your documents (each call confirmed) |
 | `/edit` | Put your last message back in the input: sending it replaces it and what followed (`Esc` cancels) |
 | `/retry [model]` | Replace the last reply with a new one, from another model if given (`/retry claude`) |
 | `/export [file.md]` | Save the conversation as Markdown (named after its title by default; never overwrites) |

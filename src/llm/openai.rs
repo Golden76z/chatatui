@@ -10,7 +10,8 @@ use serde::Deserialize;
 use serde_json::json;
 
 use super::{
-    ChatRequest, LlmClient, LlmError, ModelInfo, StreamItem, TokenStream, Usage,
+    ChatMessage, ChatRequest, ChatRole, LlmClient, LlmError, ModelInfo, StreamItem, TokenStream,
+    ToolSpec, Usage,
     http::{self, Decoded, Endpoint},
 };
 use crate::config::Provider;
@@ -50,13 +51,16 @@ impl OpenAiCompatibleClient {
 #[async_trait]
 impl LlmClient for OpenAiCompatibleClient {
     async fn chat_stream(&self, request: ChatRequest) -> Result<TokenStream, LlmError> {
-        let body = json!({
+        let mut body = json!({
             "model": request.model,
-            "messages": request.messages,
+            "messages": wire_messages(&request.messages),
             "stream": true,
             // Ask for token counts in the last chunk (ignored by servers that do not know it).
             "stream_options": { "include_usage": true },
         });
+        if !request.tools.is_empty() {
+            body["tools"] = wire_tools(&request.tools);
+        }
         let post = self.http.post(self.endpoint.url("/chat/completions"));
         let response = self.endpoint.send(self.authorize(post).json(&body)).await?;
 
@@ -205,6 +209,49 @@ fn is_openai_chat_model(id: &str) -> bool {
     !NOT_CHAT.iter().any(|word| id.contains(word))
 }
 
+/// Messages in the chat completions format; tool calls and results use its
+/// `tool_calls` / `tool_call_id` fields.
+fn wire_messages(messages: &[ChatMessage]) -> Vec<serde_json::Value> {
+    messages
+        .iter()
+        .map(|m| match m.role {
+            ChatRole::Tool => json!({
+                "role": "tool",
+                "tool_call_id": m.tool_call_id.clone().unwrap_or_default(),
+                "content": m.content,
+            }),
+            ChatRole::Assistant if !m.tool_calls.is_empty() => json!({
+                "role": "assistant",
+                "content": if m.content.is_empty() { serde_json::Value::Null } else { json!(m.content) },
+                "tool_calls": m.tool_calls.iter().map(|c| json!({
+                    "id": c.id,
+                    "type": "function",
+                    "function": { "name": c.name, "arguments": c.arguments },
+                })).collect::<Vec<_>>(),
+            }),
+            _ => json!({ "role": m.role, "content": m.content }),
+        })
+        .collect()
+}
+
+/// Tools in the `tools` format of chat completions.
+fn wire_tools(tools: &[ToolSpec]) -> serde_json::Value {
+    json!(
+        tools
+            .iter()
+            .map(|t| json!({
+                "type": "function",
+                "function": {
+                    "name": t.name,
+                    "description": t.description,
+                    "parameters": serde_json::from_str::<serde_json::Value>(t.parameters)
+                        .unwrap_or_else(|_| json!({ "type": "object" })),
+                },
+            }))
+            .collect::<Vec<_>>()
+    )
+}
+
 /// Decodes the `data` of one SSE event.
 fn decode(data: &str) -> Result<Decoded, LlmError> {
     #[derive(Deserialize)]
@@ -222,6 +269,21 @@ fn decode(data: &str) -> Result<Decoded, LlmError> {
     #[derive(Default, Deserialize)]
     struct Delta {
         content: Option<String>,
+        #[serde(default)]
+        tool_calls: Vec<WireToolCall>,
+    }
+    #[derive(Deserialize)]
+    struct WireToolCall {
+        #[serde(default)]
+        index: usize,
+        id: Option<String>,
+        function: Option<WireFunction>,
+    }
+    #[derive(Deserialize)]
+    struct WireFunction {
+        name: Option<String>,
+        #[serde(default)]
+        arguments: Option<String>,
     }
     #[derive(Deserialize)]
     struct WireUsage {
@@ -245,15 +307,28 @@ fn decode(data: &str) -> Result<Decoded, LlmError> {
             .unwrap_or_else(|| error.to_string());
         return Err(LlmError::Server(message));
     }
-    let text: String = completion
-        .choices
-        .into_iter()
-        .filter_map(|c| c.delta.content)
-        .collect();
+    let mut text = String::new();
+    let mut calls = Vec::new();
+    for choice in completion.choices {
+        text.extend(choice.delta.content);
+        for call in choice.delta.tool_calls {
+            let (name, arguments) = match call.function {
+                Some(f) => (f.name, f.arguments.unwrap_or_default()),
+                None => (None, String::new()),
+            };
+            calls.push(StreamItem::ToolCallDelta {
+                index: call.index,
+                id: call.id,
+                name,
+                arguments,
+            });
+        }
+    }
     let mut items = Vec::new();
     if !text.is_empty() {
         items.push(StreamItem::Text(text));
     }
+    items.extend(calls);
     if let Some(usage) = completion.usage {
         items.push(StreamItem::Usage(Usage {
             input_tokens: usage.prompt_tokens,
@@ -427,5 +502,51 @@ mod tests {
         ] {
             assert!(!is_openai_chat_model(id), "{id}");
         }
+    }
+
+    #[tokio::test]
+    async fn tool_calls_arrive_in_pieces() {
+        let sse = concat!(
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"read_file\",\"arguments\":\"\"}}]}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"path\\\":\"}}]}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"a.md\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n",
+            "data: [DONE]\n\n",
+        );
+        let items = collect(split(sse, 9)).await;
+        let deltas: Vec<(usize, Option<String>, Option<String>, String)> = items
+            .into_iter()
+            .filter_map(|i| match i {
+                Ok(StreamItem::ToolCallDelta {
+                    index,
+                    id,
+                    name,
+                    arguments,
+                }) => Some((index, id, name, arguments)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(deltas.len(), 3);
+        assert_eq!(deltas[0].1.as_deref(), Some("call_1"));
+        assert_eq!(deltas[0].2.as_deref(), Some("read_file"));
+        let arguments: String = deltas.iter().map(|d| d.3.as_str()).collect();
+        assert_eq!(arguments, "{\"path\":\"a.md\"}");
+    }
+
+    #[test]
+    fn tool_messages_use_the_chat_completions_format() {
+        use crate::llm::ToolCall;
+        let call = ToolCall {
+            id: "call_1".into(),
+            name: "read_file".into(),
+            arguments: "{\"path\":\"a.md\"}".into(),
+        };
+        let wire = wire_messages(&[
+            ChatMessage::tool_request("", vec![call]),
+            ChatMessage::tool_result("call_1", "contenu"),
+        ]);
+        assert_eq!(wire[0]["content"], serde_json::Value::Null);
+        assert_eq!(wire[0]["tool_calls"][0]["function"]["name"], "read_file");
+        assert_eq!(wire[1]["role"], "tool");
+        assert_eq!(wire[1]["tool_call_id"], "call_1");
     }
 }

@@ -27,13 +27,40 @@ pub enum ChatRole {
     System,
     User,
     Assistant,
+    /// The result of a tool call, answering an assistant message's `tool_calls`.
+    Tool,
 }
 
-/// A message in the wire format of the chat completions API.
+/// A tool the model asked to run.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct ToolCall {
+    /// Identifier chosen by the server, echoed with the result.
+    pub id: String,
+    pub name: String,
+    /// Arguments as a JSON object, as the model wrote them.
+    pub arguments: String,
+}
+
+/// A tool offered to the model.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ToolSpec {
+    pub name: &'static str,
+    pub description: &'static str,
+    /// JSON Schema of the arguments.
+    pub parameters: &'static str,
+}
+
+/// A message sent to the model (converted to each API's format by its client).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct ChatMessage {
     pub role: ChatRole,
     pub content: String,
+    /// Tools the assistant called in this message.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<ToolCall>,
+    /// For [`ChatRole::Tool`]: the call this message answers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
 }
 
 impl ChatMessage {
@@ -42,6 +69,24 @@ impl ChatMessage {
         Self {
             role,
             content: content.into(),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+        }
+    }
+
+    /// An assistant message that calls tools (`content`: text written before the calls).
+    pub fn tool_request(content: impl Into<String>, calls: Vec<ToolCall>) -> Self {
+        Self {
+            tool_calls: calls,
+            ..Self::new(ChatRole::Assistant, content)
+        }
+    }
+
+    /// The result of the call `id`.
+    pub fn tool_result(id: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            tool_call_id: Some(id.into()),
+            ..Self::new(ChatRole::Tool, content)
         }
     }
 }
@@ -51,6 +96,8 @@ impl ChatMessage {
 pub struct ChatRequest {
     pub model: String,
     pub messages: Vec<ChatMessage>,
+    /// Tools the model may call (none: a plain chat).
+    pub tools: Vec<ToolSpec>,
 }
 
 /// Token counts reported by the server for one request.
@@ -69,6 +116,14 @@ pub enum StreamItem {
     Text(String),
     /// Token counts (usually at the end of the stream).
     Usage(Usage),
+    /// Part of a tool call: calls arrive in pieces, grouped by `index`; the id and name
+    /// come first, the arguments' JSON text in fragments.
+    ToolCallDelta {
+        index: usize,
+        id: Option<String>,
+        name: Option<String>,
+        arguments: String,
+    },
 }
 
 /// Stream of reply items. Dropping it aborts the request.
@@ -217,6 +272,14 @@ pub enum LlmEvent {
     Retrieved {
         first_number: usize,
         chunks: Vec<crate::context::ContextChunk>,
+    },
+    /// The model asks to run a tool; the task waits for the user's decision.
+    ToolCall(ToolCall),
+    /// A tool ran (or was refused); `output` is what the model receives.
+    ToolResult {
+        call_id: String,
+        ok: bool,
+        output: String,
     },
     /// The reply is complete.
     Done,

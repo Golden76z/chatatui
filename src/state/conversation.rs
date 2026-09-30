@@ -14,6 +14,8 @@ pub enum Role {
     Attachment,
     /// A summary written by `/compact`: it replaces the messages before it.
     Summary,
+    /// A tool the model called (`source`: what it did, `content`: what it returned).
+    Tool,
 }
 
 /// Lifecycle of a message.
@@ -161,6 +163,16 @@ impl Conversation {
     /// Id the next message will get.
     pub fn next_id(&self) -> u64 {
         self.next_id
+    }
+
+    /// Appends a tool call waiting for its result (`description`: what it does).
+    pub fn push_tool(&mut self, description: impl Into<String>) -> MessageId {
+        self.push_message(
+            Role::Tool,
+            String::new(),
+            MessageStatus::Streaming,
+            Some(description.into()),
+        )
     }
 
     /// Removes the message `from` and every message after it.
