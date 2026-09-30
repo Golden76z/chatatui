@@ -252,11 +252,18 @@ fn tool_card(message: &Message, width: usize) -> Vec<Line<'static>> {
 /// An attachment is shown as a one-line card, not its whole text.
 fn attachment_card(message: &Message, width: usize) -> Vec<Line<'static>> {
     let source = message.source.as_deref().unwrap_or("fichier");
-    let text = format!(
-        "📎 {source} · {} · ≈ {} tokens",
-        format_size(message.content.len()),
-        tokens::format_count(tokens::estimate(&message.content))
-    );
+    let text = match &message.image {
+        Some(image) => format!(
+            "🖼 {source} · {} · image ({})",
+            format_size(image.bytes()),
+            image.media_type.trim_start_matches("image/")
+        ),
+        None => format!(
+            "📎 {source} · {} · ≈ {} tokens",
+            format_size(message.content.len()),
+            tokens::format_count(tokens::estimate(&message.content))
+        ),
+    };
     wrap_spans(
         &[Span::styled(
             text,
@@ -270,7 +277,7 @@ fn attachment_card(message: &Message, width: usize) -> Vec<Line<'static>> {
 }
 
 /// `812 o`, `12,3 Ko`, `1,2 Mo`.
-fn format_size(bytes: usize) -> String {
+pub fn format_size(bytes: usize) -> String {
     match bytes {
         0..1_024 => format!("{bytes} o"),
         1_024..1_048_576 => format!("{:.1} Ko", bytes as f64 / 1_024.0).replace('.', ","),

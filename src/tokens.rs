@@ -20,9 +20,16 @@ pub fn estimate_message(content: &str) -> u64 {
     estimate(content) + PER_MESSAGE_OVERHEAD
 }
 
+/// Rough cost of an image (vision models count about a thousand tokens for a picture of
+/// ordinary size).
+pub const IMAGE_TOKENS: u64 = 1_000;
+
 /// Rough token count of a whole prompt.
 pub fn estimate_prompt(messages: &[ChatMessage]) -> u64 {
-    messages.iter().map(|m| estimate_message(&m.content)).sum()
+    messages
+        .iter()
+        .map(|m| estimate_message(&m.content) + IMAGE_TOKENS * m.images.len() as u64)
+        .sum()
 }
 
 /// `3 214` (thin grouping, French style).

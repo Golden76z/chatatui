@@ -24,6 +24,11 @@ pub fn markdown(title: &str, model: &str, messages: &[Message]) -> String {
                 out.push_str(&format!("\n> 🔧 Outil : {what}\n"));
                 continue;
             }
+            Role::Attachment if message.image.is_some() => {
+                let source = message.source.as_deref().unwrap_or("image");
+                out.push_str(&format!("\n> 🖼 Image jointe : {source}\n"));
+                continue;
+            }
             Role::Attachment => {
                 let source = message.source.as_deref().unwrap_or("fichier");
                 out.push_str(&format!(

@@ -1855,8 +1855,18 @@ impl App {
                 files::file_name(&attachment.source)
             )));
         }
-        let estimate = tokens::estimate(&attachment.content);
         let name = files::file_name(&attachment.source);
+        if let Some(image) = attachment.image {
+            let size = image.bytes();
+            let id = self.conversation.push_image(attachment.source, image);
+            self.scroll.to_bottom();
+            self.status = Status::Info(format!(
+                "image jointe : {name} ({}) — il faut un modèle qui lit les images",
+                crate::transcript::format_size(size)
+            ));
+            return self.save(id).into_iter().collect();
+        }
+        let estimate = tokens::estimate(&attachment.content);
         let id = self
             .conversation
             .push_attachment(attachment.source, attachment.content);
@@ -3519,6 +3529,7 @@ mod tests {
         let effects = app.update(Action::FileRead(Ok(Attachment {
             source: "~/docs/plan.md".into(),
             content: "contenu".into(),
+            image: None,
         })));
         let saved = saved(&effects);
         assert_eq!(saved[0].0.title, "📎 plan.md");

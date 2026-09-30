@@ -136,6 +136,7 @@ mod tests {
                 status: MessageStatus::Complete,
                 source: None,
                 citations: Vec::new(),
+                image: None,
             },
         });
         handle.send(StoreRequest::Load(ConversationId("c".into())));

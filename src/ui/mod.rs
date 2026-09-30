@@ -375,6 +375,7 @@ mod tests {
         app.update(Action::FileRead(Ok(crate::files::Attachment {
             source: "docs/plan.md".into(),
             content: "x".repeat(5_000),
+            image: None,
         })));
         insta::assert_snapshot!(draw(&mut app, 90, 16).backend());
     }

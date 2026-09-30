@@ -8,7 +8,7 @@ pub mod scroll;
 pub mod sidebar;
 pub mod status;
 
-pub use conversation::{Citation, Conversation, Message, MessageId, MessageStatus, Role};
+pub use conversation::{Citation, Conversation, Image, Message, MessageId, MessageStatus, Role};
 pub use model_picker::{ModelChoice, ModelList, ModelPicker};
 pub use overlay::{Overlay, OverlayKind};
 pub use palette::Palette;

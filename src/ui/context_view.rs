@@ -118,8 +118,12 @@ pub fn lines(app: &App, width: usize) -> Vec<Line<'static>> {
     let in_context = app.conversation.context_messages();
     let attachments: Vec<_> = in_context
         .iter()
-        .filter(|m| m.role == Role::Attachment)
+        .filter(|m| m.role == Role::Attachment && m.image.is_none())
         .collect();
+    let images = in_context
+        .iter()
+        .filter(|m| m.role == Role::Attachment && m.image.is_some())
+        .count();
     let attached_tokens: u64 = attachments
         .iter()
         .map(|m| tokens::estimate(&m.content))
@@ -153,6 +157,13 @@ pub fn lines(app: &App, width: usize) -> Vec<Line<'static>> {
         attached_tokens,
         "",
     ));
+    if images > 0 {
+        lines.push(row(
+            format!("Images ({images})"),
+            tokens::IMAGE_TOKENS * images as u64,
+            "  estimation grossière",
+        ));
+    }
     if summary_tokens > 0 {
         lines.push(row("Résumé (/compact)".into(), summary_tokens, ""));
     }

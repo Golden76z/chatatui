@@ -119,6 +119,11 @@ const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE conversations ADD COLUMN persona TEXT;
     "#,
+    // v9: attached images, kept out of `content` (and of the full-text index).
+    r#"
+    ALTER TABLE messages ADD COLUMN image_type TEXT;
+    ALTER TABLE messages ADD COLUMN image_data TEXT;
+    "#,
 ];
 
 /// Latest schema version.

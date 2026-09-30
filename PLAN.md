@@ -126,6 +126,7 @@ tests/      app_flow.rs http_clients.rs fixtures/*.sse
 | J18 ✅ | Comfort: `theme = auto\|dark\|light` (semantic palette, code theme), named system prompts `[prompts]` + `/persona` per conversation |
 | J19 ✅ | RAG: re-ranking through `/v1/rerank` (`rerank_model`, falls back to hybrid order), folders watched while running with `auto_index` (notify, debounced) |
 | J20 ✅ | Tool calling: `read_file`, `list_dir`, `search_documents`; OpenAI and Anthropic formats; each call confirmed (Enter / t always / Esc), secrets refused; `/tools on\|off` |
+| J21 ✅ | Images as input: `/add photo.png` (≤ 5 MB), sent with the next question as OpenAI `image_url` / Claude `image` blocks, stored apart from the text (schema v9) |
 
 Each milestone ends with `cargo fmt`, `cargo clippy --all-targets -- -D warnings`,
 `cargo test` passing.

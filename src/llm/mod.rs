@@ -61,6 +61,9 @@ pub struct ChatMessage {
     /// For [`ChatRole::Tool`]: the call this message answers.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    /// Images shown with a user message (vision models).
+    #[serde(skip)]
+    pub images: Vec<crate::state::Image>,
 }
 
 impl ChatMessage {
@@ -71,6 +74,7 @@ impl ChatMessage {
             content: content.into(),
             tool_calls: Vec::new(),
             tool_call_id: None,
+            images: Vec::new(),
         }
     }
 

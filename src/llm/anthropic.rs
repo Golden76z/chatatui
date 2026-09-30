@@ -87,10 +87,32 @@ fn to_wire(messages: &[ChatMessage]) -> (String, Vec<WireMessage>) {
     for m in messages {
         match m.role {
             ChatRole::System => {}
-            ChatRole::User => turns.push(WireMessage {
+            ChatRole::User if m.images.is_empty() => turns.push(WireMessage {
                 role: "user",
                 content: json!(m.content),
             }),
+            ChatRole::User => {
+                // Images first, then the question about them (Anthropic's advice).
+                let mut blocks: Vec<serde_json::Value> = m
+                    .images
+                    .iter()
+                    .map(|image| {
+                        json!({
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": image.media_type,
+                                "data": image.base64,
+                            },
+                        })
+                    })
+                    .collect();
+                blocks.push(json!({ "type": "text", "text": m.content }));
+                turns.push(WireMessage {
+                    role: "user",
+                    content: json!(blocks),
+                });
+            }
             ChatRole::Assistant if m.tool_calls.is_empty() => turns.push(WireMessage {
                 role: "assistant",
                 content: json!(m.content),
@@ -499,5 +521,18 @@ mod tests {
             "one turn for both"
         );
         assert_eq!(turns[2].content[0]["tool_use_id"], "a");
+    }
+
+    #[test]
+    fn images_become_image_blocks_before_the_text() {
+        let mut question = ChatMessage::new(ChatRole::User, "Et ça ?");
+        question.images = vec![crate::state::Image {
+            media_type: "image/png".into(),
+            base64: "AAAA".into(),
+        }];
+        let (_, turns) = to_wire(&[question]);
+        assert_eq!(turns[0].content[0]["type"], "image");
+        assert_eq!(turns[0].content[0]["source"]["media_type"], "image/png");
+        assert_eq!(turns[0].content[1]["text"], "Et ça ?");
     }
 }

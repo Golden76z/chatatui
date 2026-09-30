@@ -9,12 +9,52 @@ use std::{
 /// Largest file that can be attached.
 pub const MAX_ATTACHMENT_BYTES: u64 = 256 * 1024;
 
+/// Largest image that can be attached (the limit of most vision APIs).
+pub const MAX_IMAGE_BYTES: u64 = 5 * 1024 * 1024;
+
 /// A file read for attachment.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Attachment {
     /// The path as the user typed it (shown in the conversation).
     pub source: String,
+    /// Text of a text file (empty for an image).
     pub content: String,
+    /// An image file.
+    pub image: Option<crate::state::Image>,
+}
+
+/// Media type of an image file, from its extension.
+pub fn image_type(path: &Path) -> Option<&'static str> {
+    let extension = path.extension()?.to_string_lossy().to_lowercase();
+    Some(match extension.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        _ => return None,
+    })
+}
+
+/// Reads an image to attach (at most [`MAX_IMAGE_BYTES`]).
+fn read_image(source: &str, path: &Path, media_type: &str) -> Result<Attachment, String> {
+    use base64::Engine;
+    let metadata = fs::metadata(path).map_err(|e| format!("{source} : {}", io_message(&e)))?;
+    if metadata.len() > MAX_IMAGE_BYTES {
+        return Err(format!(
+            "{source} est trop grosse ({} Ko, maximum {} Mo)",
+            metadata.len() / 1024,
+            MAX_IMAGE_BYTES / (1024 * 1024)
+        ));
+    }
+    let bytes = fs::read(path).map_err(|e| format!("{source} : {}", io_message(&e)))?;
+    Ok(Attachment {
+        source: source.to_owned(),
+        content: String::new(),
+        image: Some(crate::state::Image {
+            media_type: media_type.to_owned(),
+            base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+        }),
+    })
 }
 
 /// Expands a leading `~` to the home directory.
@@ -31,6 +71,9 @@ pub fn expand_home(path: &str) -> PathBuf {
 pub fn read_attachment(source: &str) -> Result<Attachment, String> {
     let source = source.trim();
     let path = expand_home(source);
+    if let Some(media_type) = image_type(&path) {
+        return read_image(source, &path, media_type);
+    }
     let metadata = fs::metadata(&path).map_err(|e| format!("{source} : {}", io_message(&e)))?;
     if metadata.is_dir() {
         return Err(format!("{source} est un dossier (joignez un fichier)"));
@@ -51,6 +94,7 @@ pub fn read_attachment(source: &str) -> Result<Attachment, String> {
     Ok(Attachment {
         source: source.to_owned(),
         content,
+        image: None,
     })
 }
 
@@ -261,5 +305,19 @@ mod tests {
         assert!(second.ends_with("notes-2.md"), "{second}");
         assert_eq!(std::fs::read_to_string(&first).expect("read"), "un");
         assert!(write_new(Some("/definitely/not/here/x.md"), "x.md", "").is_err());
+    }
+
+    #[test]
+    fn images_are_read_as_base64() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let png = dir.path().join("schéma.PNG");
+        std::fs::write(&png, [0x89, b'P', b'N', b'G']).expect("write");
+        let attachment = read_attachment(&png.display().to_string()).expect("image");
+        let image = attachment.image.expect("an image");
+        assert_eq!(image.media_type, "image/png");
+        assert_eq!(image.base64, "iVBORw==");
+        assert!(attachment.content.is_empty());
+        assert_eq!(image_type(Path::new("a.jpeg")), Some("image/jpeg"));
+        assert_eq!(image_type(Path::new("a.svg")), None, "not for vision APIs");
     }
 }

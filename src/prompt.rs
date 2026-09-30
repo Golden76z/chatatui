@@ -49,7 +49,18 @@ pub fn build_messages(
     if !system.is_empty() {
         messages.push(ChatMessage::new(ChatRole::System, system));
     }
-    messages.extend(history.iter().filter(usable).filter_map(|m| {
+    // Images go with the next user message (the question about them).
+    let mut images: Vec<crate::state::Image> = Vec::new();
+    messages.extend(history.iter().filter_map(|m| {
+        if m.role == Role::Attachment
+            && let Some(image) = &m.image
+        {
+            images.push(image.clone());
+            return None;
+        }
+        if !usable(&m) {
+            return None;
+        }
         let role = match m.role {
             Role::System => ChatRole::System,
             Role::User => ChatRole::User,
@@ -59,8 +70,18 @@ pub fn build_messages(
             Role::Tool => return Some(ChatMessage::new(ChatRole::Assistant, tool_note(m))),
             Role::Attachment | Role::Summary => return None,
         };
-        Some(ChatMessage::new(role, m.content.clone()))
+        let mut message = ChatMessage::new(role, m.content.clone());
+        if role == ChatRole::User {
+            message.images = std::mem::take(&mut images);
+        }
+        Some(message)
     }));
+    // Images attached after the last question go with it.
+    if !images.is_empty()
+        && let Some(last) = messages.iter_mut().rev().find(|m| m.role == ChatRole::User)
+    {
+        last.images.extend(images);
+    }
     messages
 }
 
@@ -80,6 +101,7 @@ fn tool_note(message: &Message) -> String {
 /// An attachment whose text goes into the prompt as a numbered source.
 fn is_sent_attachment(message: &Message) -> bool {
     message.role == Role::Attachment
+        && message.image.is_none()
         && !matches!(
             message.status,
             MessageStatus::Failed(_) | MessageStatus::Streaming
@@ -281,5 +303,32 @@ mod tests {
         assert!(body.contains("### Attached file a.txt\ndonnées"));
         assert!(body.contains("### User\nQ"));
         assert!(body.contains("### Assistant\nR"));
+    }
+
+    #[test]
+    fn images_go_with_the_next_question() {
+        let mut c = Conversation::new();
+        c.push_image(
+            "schéma.png",
+            crate::state::Image {
+                media_type: "image/png".into(),
+                base64: "iVBORw==".into(),
+            },
+        );
+        c.push(
+            Role::User,
+            "Que montre ce schéma ?",
+            MessageStatus::Complete,
+        );
+        let messages = build_messages("Be brief.", &Context::default(), c.messages());
+        assert_eq!(messages.len(), 2);
+        assert!(!messages[0].content.contains("iVBOR"), "not a text source");
+        assert_eq!(messages[1].images.len(), 1);
+        assert_eq!(
+            first_context_number(c.messages()),
+            1,
+            "images are not numbered"
+        );
+        assert!(crate::tokens::estimate_prompt(&messages) > crate::tokens::IMAGE_TOKENS);
     }
 }

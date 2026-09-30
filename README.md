@@ -205,7 +205,7 @@ run), or press `Ctrl+P` for the palette:
 | `/model [provider] [model]` | Choose the model (`Ctrl+M` / `F2`), or switch directly: `/model qwen2.5:7b`, `/model claude`, `/model claude <model>` |
 | `/context` | Context window, tokens used (measured or estimated) and where they go |
 | `/prompt` | The exact messages the next request will send |
-| `/add <file>` | Attach a text file (≤ 256 KB) to the context; `Tab` completes the path |
+| `/add <file>` | Attach a text file (≤ 256 KB) to the context, or an image (PNG, JPEG, GIF, WebP, ≤ 5 MB) for vision models (llava, qwen2.5-vl, Claude, GPT-4o…); `Tab` completes the path |
 | `/clear` | Empty the context: messages stay on screen but are no longer sent |
 | `/compact` | Ask the model to summarize the history; the summary replaces it in the context |
 | `/index <folder> [name] [--types …]` | Index a folder into a document collection (named after the folder by default), or `/index <name>` to update one; `Tab` completes the path, `Esc` stops |

@@ -229,6 +229,18 @@ fn wire_messages(messages: &[ChatMessage]) -> Vec<serde_json::Value> {
                     "function": { "name": c.name, "arguments": c.arguments },
                 })).collect::<Vec<_>>(),
             }),
+            ChatRole::User if !m.images.is_empty() => {
+                let mut parts = vec![json!({ "type": "text", "text": m.content })];
+                parts.extend(m.images.iter().map(|image| {
+                    json!({
+                        "type": "image_url",
+                        "image_url": {
+                            "url": format!("data:{};base64,{}", image.media_type, image.base64)
+                        },
+                    })
+                }));
+                json!({ "role": "user", "content": parts })
+            }
             _ => json!({ "role": m.role, "content": m.content }),
         })
         .collect()
@@ -548,5 +560,20 @@ mod tests {
         assert_eq!(wire[0]["tool_calls"][0]["function"]["name"], "read_file");
         assert_eq!(wire[1]["role"], "tool");
         assert_eq!(wire[1]["tool_call_id"], "call_1");
+    }
+
+    #[test]
+    fn images_become_image_url_parts() {
+        let mut question = ChatMessage::new(ChatRole::User, "Et ça ?");
+        question.images = vec![crate::state::Image {
+            media_type: "image/jpeg".into(),
+            base64: "AAAA".into(),
+        }];
+        let wire = wire_messages(&[question]);
+        assert_eq!(wire[0]["content"][0]["text"], "Et ça ?");
+        assert_eq!(
+            wire[0]["content"][1]["image_url"]["url"],
+            "data:image/jpeg;base64,AAAA"
+        );
     }
 }

@@ -31,6 +31,31 @@ pub enum MessageStatus {
     Failed(String),
 }
 
+/// An image attached with `/add`, sent to vision models.
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Image {
+    /// `image/png`, `image/jpeg`, `image/gif` or `image/webp`.
+    pub media_type: String,
+    /// The file, base64-encoded.
+    pub base64: String,
+}
+
+impl std::fmt::Debug for Image {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Image")
+            .field("media_type", &self.media_type)
+            .field("base64_len", &self.base64.len())
+            .finish()
+    }
+}
+
+impl Image {
+    /// Size of the file, in bytes.
+    pub fn bytes(&self) -> usize {
+        self.base64.len() / 4 * 3
+    }
+}
+
 /// A passage the model was given to write a reply, as listed under it.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Citation {
@@ -64,6 +89,8 @@ pub struct Message {
     pub source: Option<String>,
     /// Passages retrieved for an assistant reply (RAG).
     pub citations: Vec<Citation>,
+    /// For an attached image: the image itself (`content` is then empty).
+    pub image: Option<Image>,
 }
 
 /// An ordered list of messages, and where the model's context starts.
@@ -133,7 +160,22 @@ impl Conversation {
             status,
             source,
             citations: Vec::new(),
+            image: None,
         });
+        id
+    }
+
+    /// Appends an image as an attachment.
+    pub fn push_image(&mut self, source: impl Into<String>, image: Image) -> MessageId {
+        let id = self.push_message(
+            Role::Attachment,
+            String::new(),
+            MessageStatus::Complete,
+            Some(source.into()),
+        );
+        if let Some(message) = self.messages.last_mut() {
+            message.image = Some(image);
+        }
         id
     }
 

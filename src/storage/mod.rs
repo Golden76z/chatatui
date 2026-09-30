@@ -63,7 +63,9 @@ pub struct StoredConversation {
     pub persona: Option<String>,
 }
 
-/// Work for the storage worker.
+/// Work for the storage worker. Requests are short-lived (sent once over a channel), so
+/// the size of the message variant does not matter.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StoreRequest {
     /// Insert or update a message (and create or touch its conversation).
@@ -292,8 +294,8 @@ impl Store {
         tx.execute(
             "INSERT INTO messages
                  (conversation_id, seq, role, content, status, error, source, citations,
-                  created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                  created_at, image_type, image_data)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
              ON CONFLICT (conversation_id, seq) DO UPDATE SET
                  content = excluded.content, status = excluded.status, error = excluded.error,
                  citations = excluded.citations",
@@ -306,7 +308,9 @@ impl Store {
                 error,
                 message.source,
                 encode_citations(&message.citations),
-                now
+                now,
+                message.image.as_ref().map(|i| i.media_type.as_str()),
+                message.image.as_ref().map(|i| i.base64.as_str())
             ],
         )?;
         tx.commit()?;
@@ -460,7 +464,8 @@ impl Store {
             .ok_or(StoreError::NotFound)?;
 
         let mut statement = self.conn.prepare(
-            "SELECT seq, role, content, status, error, source, citations FROM messages
+            "SELECT seq, role, content, status, error, source, citations, image_type, image_data
+             FROM messages
              WHERE conversation_id = ?1 ORDER BY seq",
         )?;
         let rows = statement.query_map([&id.0], |row| {
@@ -472,11 +477,14 @@ impl Store {
                 row.get::<_, Option<String>>(4)?,
                 row.get::<_, Option<String>>(5)?,
                 row.get::<_, Option<String>>(6)?,
+                row.get::<_, Option<String>>(7)?,
+                row.get::<_, Option<String>>(8)?,
             ))
         })?;
         let mut messages = Vec::new();
         for row in rows {
-            let (seq, role, content, status, error, source, citations) = row?;
+            let (seq, role, content, status, error, source, citations, image_type, image_data) =
+                row?;
             messages.push(Message {
                 id: MessageId(u64::try_from(seq).map_err(|_| corrupt("seq", &seq))?),
                 role: decode_role(&role)?,
@@ -484,6 +492,12 @@ impl Store {
                 status: decode_status(&status, error)?,
                 source,
                 citations: decode_citations(citations.as_deref())?,
+                image: match (image_type, image_data) {
+                    (Some(media_type), Some(base64)) => {
+                        Some(crate::state::Image { media_type, base64 })
+                    }
+                    _ => None,
+                },
             });
         }
         Ok(StoredConversation {
@@ -623,6 +637,7 @@ mod tests {
             status,
             source: None,
             citations: Vec::new(),
+            image: None,
         }
     }
 
@@ -920,5 +935,25 @@ mod tests {
         store.delete(&ConversationId("c".into())).expect("delete");
         assert!(store.search("examens").expect("search").is_empty());
         assert_eq!(store.list().expect("list").len(), 2);
+    }
+
+    #[test]
+    fn images_round_trip_outside_the_text() {
+        let mut store = store();
+        let conv = record("c1", "t");
+        let image = Message {
+            source: Some("schéma.png".into()),
+            image: Some(crate::state::Image {
+                media_type: "image/png".into(),
+                base64: "iVBORw==".into(),
+            }),
+            ..message(0, Role::Attachment, "", MessageStatus::Complete)
+        };
+        store.save_message(&conv, &image).expect("save");
+        assert_eq!(store.load(&conv.id).expect("load").messages, vec![image]);
+        assert!(
+            store.search("iVBORw").expect("search").is_empty(),
+            "not indexed"
+        );
     }
 }
