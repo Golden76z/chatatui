@@ -75,10 +75,8 @@ pub fn encode_vector(vector: &[f32]) -> Vec<u8> {
 
 /// Decodes a blob written by [`encode_vector`].
 pub fn decode_vector(bytes: &[u8]) -> Vec<f32> {
-    bytes
-        .chunks_exact(4)
-        .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-        .collect()
+    let (floats, _) = bytes.as_chunks::<4>();
+    floats.iter().map(|b| f32::from_le_bytes(*b)).collect()
 }
 
 /// Returns the collection `name`, creating it if needed. If it was indexed with another
