@@ -12,6 +12,8 @@ pub enum CommandId {
     Add,
     Clear,
     Compact,
+    Index,
+    Collections,
     Help,
     Quit,
 }
@@ -139,6 +141,24 @@ pub const COMMANDS: &[CommandSpec] = &[
         legacy_shortcut: None,
     },
     CommandSpec {
+        id: CommandId::Index,
+        name: "index",
+        aliases: &["indexer"],
+        arg: Arg::Required("<dossier> [nom]"),
+        description: "Indexer un dossier de documents pour la recherche (RAG)",
+        shortcut: None,
+        legacy_shortcut: None,
+    },
+    CommandSpec {
+        id: CommandId::Collections,
+        name: "collections",
+        aliases: &["docs"],
+        arg: Arg::None,
+        description: "Collections de documents indexées",
+        shortcut: None,
+        legacy_shortcut: None,
+    },
+    CommandSpec {
         id: CommandId::Help,
         name: "help",
         aliases: &["aide", "?"],
@@ -157,6 +177,35 @@ pub const COMMANDS: &[CommandSpec] = &[
         legacy_shortcut: None,
     },
 ];
+
+/// Splits an argument into words; `"…"` or `'…'` group words with spaces.
+pub fn split_args(arg: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut quote: Option<char> = None;
+    let mut started = false;
+    for c in arg.chars() {
+        match (quote, c) {
+            (Some(q), c) if c == q => quote = None,
+            (Some(_), c) => word.push(c),
+            (None, '"' | '\'') => {
+                quote = Some(c);
+                started = true;
+            }
+            (None, c) if c.is_whitespace() => {
+                if started || !word.is_empty() {
+                    words.push(std::mem::take(&mut word));
+                    started = false;
+                }
+            }
+            (None, c) => word.push(c),
+        }
+    }
+    if started || !word.is_empty() {
+        words.push(word);
+    }
+    words
+}
 
 /// Looks a command up by name or alias.
 pub fn find(name: &str) -> Option<&'static CommandSpec> {
@@ -294,7 +343,10 @@ mod tests {
         );
         assert_eq!(names(&suggestions("/m")), vec!["model"]);
         assert_eq!(names(&suggestions("/h")), vec!["history", "help"]);
-        assert_eq!(names(&suggestions("/co")), vec!["context", "compact"]);
+        assert_eq!(
+            names(&suggestions("/co")),
+            vec!["context", "compact", "collections"]
+        );
         assert_eq!(
             names(&suggestions("/a")),
             vec!["add", "help"],
@@ -327,6 +379,17 @@ mod tests {
             "« modèle » in a description"
         );
         assert_eq!(search("").len(), COMMANDS.len());
+    }
+
+    #[test]
+    fn arguments_with_quotes() {
+        assert_eq!(split_args("~/cours rust"), ["~/cours", "rust"]);
+        assert_eq!(
+            split_args("\"~/Mes documents\"  notes"),
+            ["~/Mes documents", "notes"]
+        );
+        assert_eq!(split_args("'a b'"), ["a b"]);
+        assert!(split_args("   ").is_empty());
     }
 
     #[test]

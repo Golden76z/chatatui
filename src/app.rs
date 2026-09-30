@@ -33,6 +33,11 @@ use crate::{
         stream_task::{CompletionJob, JobKind},
     },
     prompt,
+    rag::{
+        RagConfig,
+        indexer::{IndexEvent, IndexReport},
+        store::CollectionSummary,
+    },
     state::{
         Conversation, MessageId, MessageStatus, ModelPicker, Overlay, Palette, Role, ScrollState,
         Sidebar, Status,
@@ -41,6 +46,45 @@ use crate::{
     tokens,
     transcript::Transcript,
 };
+
+/// The command and path being typed when the input is `/add <path>` or `/index <path>`
+/// (only the first argument of `/index`, before any name).
+fn path_argument(input: &str) -> Option<(&'static str, &str)> {
+    if let Some(rest) = input.strip_prefix("/add ") {
+        return Some(("/add ", rest));
+    }
+    input
+        .strip_prefix("/index ")
+        .filter(|rest| !rest.contains(' '))
+        .map(|rest| ("/index ", rest))
+}
+
+/// One-line outcome of an indexing run.
+pub fn index_summary(report: &IndexReport) -> String {
+    let mut parts = vec![format!("{} fichiers", report.files)];
+    for (count, label) in [
+        (report.added, "ajoutés"),
+        (report.updated, "modifiés"),
+        (report.removed, "retirés"),
+        (report.unchanged, "inchangés"),
+        (report.skipped.len(), "ignorés"),
+    ] {
+        if count > 0 {
+            parts.push(format!("{count} {label}"));
+        }
+    }
+    let reset = if report.reset {
+        " (modèle d'embedding changé : réindexé)"
+    } else {
+        ""
+    };
+    format!(
+        "« {} » indexée : {}, {} passages écrits{reset}",
+        report.collection,
+        parts.join(", "),
+        tokens::format_count(u64::try_from(report.passages).unwrap_or(u64::MAX))
+    )
+}
 
 /// Maximum length of a conversation title, in characters.
 const TITLE_MAX_CHARS: usize = 60;
@@ -100,6 +144,17 @@ pub struct ContextUsage {
     pub measured: bool,
 }
 
+/// Progress of the running `/index`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct IndexProgress {
+    pub collection: String,
+    pub done: usize,
+    /// Files to process; 0 while scanning.
+    pub total: usize,
+    /// File being processed.
+    pub current: String,
+}
+
 /// The whole application state.
 #[derive(Debug)]
 pub struct App {
@@ -144,6 +199,14 @@ pub struct App {
     next_request_id: u64,
     /// Context windows reported by servers, by (provider, model).
     pub known_windows: HashMap<(String, String), u64>,
+    /// Document collections and the time they were listed at, once listed (RAG).
+    pub collections: Option<(Vec<CollectionSummary>, i64)>,
+    /// The running `/index`, if any.
+    pub indexing: Option<IndexProgress>,
+    /// Report of the last completed `/index` of this session.
+    pub last_index: Option<IndexReport>,
+    /// Indexing settings (shown in `/collections`).
+    pub rag: RagConfig,
     /// Token counts of the last completed request of this conversation.
     pub measured: Option<Measured>,
     /// Token counts received for the running request.
@@ -194,6 +257,10 @@ impl App {
             next_request_id: 0,
             known_windows: HashMap::new(),
             measured: None,
+            collections: None,
+            indexing: None,
+            last_index: None,
+            rag: config.rag.clone(),
             request_usage: Usage::default(),
             session_seed: 0,
             next_conversation: 0,
@@ -290,7 +357,7 @@ impl App {
         KeyContext {
             input_empty: self.input.is_empty(),
             completing_path: self.input.lines().len() == 1
-                && self.input_text().starts_with("/add "),
+                && path_argument(&self.input_text()).is_some(),
             sidebar_open: self.sidebar.is_some(),
             overlay: self.overlay.as_ref().map(Overlay::kind),
             suggestions_open: !self.suggestions().is_empty(),
@@ -390,8 +457,12 @@ impl App {
             Action::Cancel => {
                 if self.overlay.take().is_some() || self.sidebar.take().is_some() {
                     Vec::new()
-                } else {
+                } else if self.is_generating() {
                     self.cancel_generation()
+                } else if self.indexing.is_some() {
+                    vec![Effect::CancelIndex]
+                } else {
+                    Vec::new()
                 }
             }
             Action::OpenModelPicker => self.toggle_model_picker(),
@@ -466,7 +537,12 @@ impl App {
                         None => Vec::new(),
                     }
                 }
-                Some(Overlay::Help { .. } | Overlay::Context { .. } | Overlay::Prompt { .. }) => {
+                Some(
+                    Overlay::Help { .. }
+                    | Overlay::Context { .. }
+                    | Overlay::Prompt { .. }
+                    | Overlay::Collections { .. },
+                ) => {
                     self.overlay = None;
                     Vec::new()
                 }
@@ -521,8 +597,8 @@ impl App {
                 self.suggestions_dismissed = true;
                 Vec::new()
             }
-            Action::CompletePath => match self.input_text().strip_prefix("/add ") {
-                Some(partial) => vec![Effect::CompletePath(partial.to_owned())],
+            Action::CompletePath => match path_argument(&self.input_text()) {
+                Some((_, partial)) => vec![Effect::CompletePath(partial.to_owned())],
                 None => Vec::new(),
             },
             Action::PathCompleted {
@@ -610,6 +686,7 @@ impl App {
             }
             Action::Llm { request_id, event } => self.on_llm_event(request_id, event),
             Action::Storage(event) => self.on_storage_event(event),
+            Action::Index(event) => self.on_index_event(event),
         }
     }
 
@@ -678,6 +755,11 @@ impl App {
             CommandId::Add => self.attach(arg),
             CommandId::Clear => self.clear_context(),
             CommandId::Compact => self.compact(),
+            CommandId::Index => self.start_index(arg),
+            CommandId::Collections => {
+                self.overlay = Some(Overlay::Collections { scroll: 0 });
+                self.refresh_collections()
+            }
             CommandId::Quit => self.apply(Action::Quit),
         }
     }
@@ -700,18 +782,23 @@ impl App {
 
     /// Applies path completions if the input did not change meanwhile.
     fn on_path_completed(&mut self, partial: &str, candidates: &[String]) {
-        if self.input_text() != format!("/add {partial}") {
+        let text = self.input_text();
+        let Some((command, typed)) = path_argument(&text) else {
+            return;
+        };
+        if typed != partial {
             return; // the user kept typing
         }
+        let command = command.to_owned();
         match candidates {
             [] => {
                 self.status = Status::Error(format!("aucun fichier ne correspond à « {partial} »"))
             }
-            [only] => self.set_input(&format!("/add {only}")),
+            [only] => self.set_input(&format!("{command}{only}")),
             many => {
                 let prefix = files::common_prefix(many);
                 if prefix.chars().count() > partial.chars().count() {
-                    self.set_input(&format!("/add {prefix}"));
+                    self.set_input(&format!("{command}{prefix}"));
                 }
                 let names: Vec<String> = many
                     .iter()
@@ -832,6 +919,97 @@ impl App {
             return Vec::new();
         }
         vec![Effect::ReadFile(path.to_owned())]
+    }
+
+    /// `/index <folder> [name]`: starts indexing a folder into a collection.
+    fn start_index(&mut self, arg: &str) -> Vec<Effect> {
+        if let Some(progress) = &self.indexing {
+            self.status = Status::Error(format!(
+                "indexation de « {} » déjà en cours (Échap pour l'arrêter)",
+                progress.collection
+            ));
+            return Vec::new();
+        }
+        let args = commands::split_args(arg);
+        let (root, name) = match args.as_slice() {
+            [root] => {
+                let trimmed = root.trim_end_matches('/');
+                (
+                    root.clone(),
+                    files::file_name(if trimmed.is_empty() { root } else { trimmed }),
+                )
+            }
+            [root, name] => (root.clone(), name.clone()),
+            _ => {
+                self.status = Status::Error("usage : /index <dossier> [nom]".into());
+                return Vec::new();
+            }
+        };
+        if name.is_empty() || name.contains('/') || matches!(name.as_str(), "~" | "." | "..") {
+            self.status = Status::Error("donnez un nom : /index <dossier> <nom>".into());
+            return Vec::new();
+        }
+        self.indexing = Some(IndexProgress {
+            collection: name.clone(),
+            ..IndexProgress::default()
+        });
+        // The status bar shows the progress (and Esc to stop it).
+        self.status = Status::Ready;
+        vec![Effect::StartIndex {
+            collection: name,
+            root,
+        }]
+    }
+
+    fn on_index_event(&mut self, event: IndexEvent) -> Vec<Effect> {
+        match event {
+            IndexEvent::Scanning { collection } => {
+                self.indexing = Some(IndexProgress {
+                    collection,
+                    ..IndexProgress::default()
+                });
+                Vec::new()
+            }
+            IndexEvent::Progress {
+                collection,
+                done,
+                total,
+                current,
+            } => {
+                self.indexing = Some(IndexProgress {
+                    collection,
+                    done,
+                    total,
+                    current,
+                });
+                Vec::new()
+            }
+            IndexEvent::Finished(report) => {
+                self.indexing = None;
+                self.status = Status::Info(index_summary(&report));
+                self.last_index = Some(report);
+                self.refresh_collections()
+            }
+            IndexEvent::Failed { collection, error } => {
+                self.indexing = None;
+                self.status = Status::Error(format!("indexation de « {collection} » : {error}"));
+                self.refresh_collections()
+            }
+            IndexEvent::Cancelled { collection } => {
+                self.indexing = None;
+                self.status = Status::Info(format!("indexation de « {collection} » arrêtée"));
+                self.refresh_collections()
+            }
+        }
+    }
+
+    /// Asks for the collection list when the `/collections` popup is open.
+    fn refresh_collections(&self) -> Vec<Effect> {
+        if matches!(self.overlay, Some(Overlay::Collections { .. })) {
+            vec![Effect::Store(StoreRequest::ListCollections)]
+        } else {
+            Vec::new()
+        }
     }
 
     /// Adds a file that was read to the conversation.
@@ -1049,6 +1227,10 @@ impl App {
                 Vec::new()
             }
             StoreEvent::Loaded(stored) => self.load(stored),
+            StoreEvent::Collections { collections, now } => {
+                self.collections = Some((collections, now));
+                Vec::new()
+            }
             StoreEvent::Error(error) => {
                 if let Some(sidebar) = &mut self.sidebar
                     && sidebar.items.is_none()
@@ -2341,5 +2523,37 @@ mod tests {
         assert_eq!(app.conversation.context_start(), 0);
         assert_eq!(last(&app).role, Role::Summary);
         assert_eq!(app.prompt().len(), 3, "system + a + reply");
+    }
+
+    #[test]
+    fn path_argument_covers_add_and_the_folder_of_index() {
+        assert_eq!(path_argument("/add ~/a.md"), Some(("/add ", "~/a.md")));
+        assert_eq!(
+            path_argument("/index ~/cours"),
+            Some(("/index ", "~/cours"))
+        );
+        assert_eq!(path_argument("/index ~/cours rust"), None);
+        assert_eq!(path_argument("/model x"), None);
+    }
+
+    #[test]
+    fn index_usage_errors() {
+        let mut app = App::new(&Config::default(), false);
+        assert!(app.run_command(CommandId::Index, "").is_empty());
+        assert_eq!(
+            app.status,
+            Status::Error("usage : /index <dossier> [nom]".into())
+        );
+        assert!(app.run_command(CommandId::Index, "a b c").is_empty());
+        assert!(app.run_command(CommandId::Index, "/").is_empty());
+        assert!(app.indexing.is_none());
+        let effects = app.run_command(CommandId::Index, "\"~/Mes cours/\" rust");
+        assert_eq!(
+            effects,
+            vec![Effect::StartIndex {
+                collection: "rust".into(),
+                root: "~/Mes cours/".into()
+            }]
+        );
     }
 }

@@ -21,6 +21,7 @@ pub mod layout;
 pub mod llm;
 pub mod markdown;
 pub mod prompt;
+pub mod rag;
 pub mod runtime;
 pub mod state;
 pub mod storage;

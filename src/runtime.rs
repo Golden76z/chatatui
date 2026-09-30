@@ -1,6 +1,6 @@
 //! The main loop: draws, waits for events, turns them into actions and executes effects.
 
-use std::{sync::Arc, time::Duration};
+use std::{fmt, path::PathBuf, sync::Arc, time::Duration};
 
 use color_eyre::Result;
 use crossterm::event::{Event as TermEvent, KeyEventKind, MouseEventKind};
@@ -15,6 +15,10 @@ use crate::{
     event::{AppEvent, Event, EventHandler},
     files, keymap,
     llm::{self, ProviderModels, RequestId, stream_task},
+    rag::{
+        embed::{Embedder, OpenAiEmbedder},
+        indexer::{self, IndexEvent, IndexRequest},
+    },
     storage::worker::{Location, StoreHandle},
     ui,
 };
@@ -37,6 +41,60 @@ pub struct Runtime {
     running_task: Option<(RequestId, CancellationToken)>,
     /// Storage worker; `None` once shut down.
     store: Option<StoreHandle>,
+    /// What `/index` needs.
+    rag: RagBackend,
+    /// Cancellation handle of the running indexing job.
+    running_index: Option<CancellationToken>,
+}
+
+/// The embedding backend and database file used by indexing, or why indexing is unavailable.
+struct RagBackend {
+    embedder: Result<Arc<dyn Embedder>, String>,
+    database: Result<PathBuf, String>,
+    chunk_tokens: usize,
+}
+
+impl fmt::Debug for RagBackend {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RagBackend")
+            .field("embedder", &self.embedder.as_ref().map(|e| e.model()))
+            .field("database", &self.database)
+            .field("chunk_tokens", &self.chunk_tokens)
+            .finish()
+    }
+}
+
+impl RagBackend {
+    fn new(config: &Config, providers: &[crate::config::Provider], database: &Location) -> Self {
+        let rag = &config.rag;
+        let embedder = providers
+            .iter()
+            .find(|p| p.id == rag.embedding_provider)
+            .ok_or_else(|| {
+                format!(
+                    "fournisseur d'embeddings « {} » inconnu (section [rag])",
+                    rag.embedding_provider
+                )
+            })
+            .and_then(|provider| {
+                OpenAiEmbedder::new(
+                    provider,
+                    &rag.embedding_model,
+                    Duration::from_secs(config.connect_timeout_secs),
+                )
+                .map_err(|e| e.to_string())
+            })
+            .map(|e| Arc::new(e) as Arc<dyn Embedder>);
+        let database = match database {
+            Location::File(path) => Ok(path.clone()),
+            Location::Memory => Err("index indisponible (base en mémoire)".to_owned()),
+        };
+        Self {
+            embedder,
+            database,
+            chunk_tokens: rag.chunk_tokens,
+        }
+    }
 }
 
 impl Runtime {
@@ -51,6 +109,7 @@ impl Runtime {
             clients,
             context: Arc::new(NoContext),
         };
+        let rag = RagBackend::new(&config, &providers, &database);
         let events = EventHandler::new();
         let sender = events.sender();
         let store = StoreHandle::spawn(database, move |event| {
@@ -64,6 +123,8 @@ impl Runtime {
             provider_order,
             running_task: None,
             store: Some(store),
+            rag,
+            running_index: None,
         })
     }
 
@@ -89,6 +150,9 @@ impl Runtime {
             {
                 needs_redraw |= self.handle(event);
             }
+        }
+        if let Some(token) = self.running_index.take() {
+            token.cancel();
         }
         // Let the storage thread write what is still queued (e.g. a reply cut by quitting).
         if let Some(store) = self.store.take() {
@@ -123,6 +187,17 @@ impl Runtime {
                 Some(Action::Llm { request_id, event })
             }
             Event::App(AppEvent::Storage(event)) => Some(Action::Storage(event)),
+            Event::App(AppEvent::Index(event)) => {
+                if matches!(
+                    event,
+                    IndexEvent::Finished(_)
+                        | IndexEvent::Failed { .. }
+                        | IndexEvent::Cancelled { .. }
+                ) {
+                    self.running_index = None;
+                }
+                Some(Action::Index(event))
+            }
             Event::App(AppEvent::Models(result)) => Some(Action::ModelsListed(result)),
             Event::App(AppEvent::FileRead(result)) => Some(Action::FileRead(result)),
             Event::App(AppEvent::PathCompletions {
@@ -243,6 +318,12 @@ impl Runtime {
                     store.send(request);
                 }
             }
+            Effect::StartIndex { collection, root } => self.start_index(collection, &root),
+            Effect::CancelIndex => {
+                if let Some(token) = &self.running_index {
+                    token.cancel();
+                }
+            }
             Effect::CancelCompletion(request_id) => {
                 if let Some((id, token)) = self.running_task.take() {
                     if id == request_id {
@@ -253,6 +334,53 @@ impl Runtime {
                 }
             }
         }
+    }
+}
+
+impl Runtime {
+    /// Spawns the indexing job, or reports right away why it cannot run.
+    fn start_index(&mut self, collection: String, root: &str) {
+        let sender = self.events.sender();
+        let fail = |error: String| {
+            // Fails only while shutting down.
+            let _ = sender.send(Event::App(AppEvent::Index(IndexEvent::Failed {
+                collection: collection.clone(),
+                error,
+            })));
+        };
+        if self.running_index.is_some() {
+            return fail("une indexation est déjà en cours".into());
+        }
+        let embedder = match &self.rag.embedder {
+            Ok(embedder) => Arc::clone(embedder),
+            Err(error) => return fail(error.clone()),
+        };
+        let database = match &self.rag.database {
+            Ok(path) => path.clone(),
+            Err(error) => return fail(error.clone()),
+        };
+        let root = files::expand_home(root);
+        if !root.is_dir() {
+            return fail(format!("{} n'est pas un dossier", root.display()));
+        }
+        let request = IndexRequest {
+            collection: collection.clone(),
+            root,
+            chunk_tokens: self.rag.chunk_tokens,
+        };
+        let token = CancellationToken::new();
+        self.running_index = Some(token.clone());
+        let sender = self.events.sender();
+        tokio::spawn(indexer::run(
+            request,
+            database,
+            embedder,
+            token,
+            move |event| {
+                // Fails only while shutting down.
+                let _ = sender.send(Event::App(AppEvent::Index(event)));
+            },
+        ));
     }
 }
 

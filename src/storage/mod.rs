@@ -75,6 +75,8 @@ pub enum StoreRequest {
     List,
     /// Load one conversation.
     Load(ConversationId),
+    /// List document collections (RAG).
+    ListCollections,
 }
 
 /// Results reported by the storage worker.
@@ -86,6 +88,11 @@ pub enum StoreEvent {
         now: i64,
     },
     Loaded(StoredConversation),
+    /// Document collections (RAG), listed at `now` (Unix seconds).
+    Collections {
+        collections: Vec<crate::rag::store::CollectionSummary>,
+        now: i64,
+    },
     /// User-facing error message.
     Error(String),
 }
@@ -137,6 +144,11 @@ impl Store {
         Ok(Self { conn })
     }
 
+    /// The underlying connection (for the RAG tables).
+    pub fn into_connection(self) -> Connection {
+        self.conn
+    }
+
     /// Executes a request and turns the outcome into an event (`None` for silent writes).
     pub fn handle(&mut self, request: StoreRequest) -> Option<StoreEvent> {
         let result = match request {
@@ -159,6 +171,14 @@ impl Store {
                 })
             }),
             StoreRequest::Load(id) => self.load(&id).map(|c| Some(StoreEvent::Loaded(c))),
+            StoreRequest::ListCollections => {
+                crate::rag::store::list_collections(&self.conn).map(|collections| {
+                    Some(StoreEvent::Collections {
+                        collections,
+                        now: now(),
+                    })
+                })
+            }
         };
         result.unwrap_or_else(|e| Some(StoreEvent::Error(format!("historique : {e}"))))
     }

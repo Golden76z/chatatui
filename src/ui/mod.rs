@@ -7,6 +7,7 @@ use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use crate::{app::App, layout, state::Overlay};
 
 mod chat;
+mod collections_view;
 mod context_view;
 mod help;
 mod model_picker;
@@ -37,7 +38,12 @@ pub fn render(app: &App, frame: &mut Frame) {
             model_picker::render(app, picker, frame, frame.area());
         }
         Some(Overlay::Palette(palette)) => palette::render(app, palette, frame, frame.area()),
-        Some(Overlay::Help { .. } | Overlay::Context { .. } | Overlay::Prompt { .. }) => {
+        Some(
+            Overlay::Help { .. }
+            | Overlay::Context { .. }
+            | Overlay::Prompt { .. }
+            | Overlay::Collections { .. },
+        ) => {
             text_popup::render(app, frame, frame.area());
         }
         None => {}
@@ -365,5 +371,63 @@ mod tests {
             content: "x".repeat(5_000),
         })));
         insta::assert_snapshot!(draw(&mut app, 90, 16).backend());
+    }
+
+    #[test]
+    fn collections_popup_with_last_report() {
+        use crate::rag::{indexer::IndexReport, store::CollectionSummary};
+        let mut app = App::new(&Config::default(), false);
+        app.update(Action::Resize {
+            width: 80,
+            height: 24,
+        });
+        let effects = app.run_command(crate::commands::CommandId::Collections, "");
+        assert_eq!(
+            effects,
+            vec![Effect::Store(crate::storage::StoreRequest::ListCollections)]
+        );
+        app.update(Action::Storage(StoreEvent::Collections {
+            collections: vec![CollectionSummary {
+                name: "rust".into(),
+                root: "/home/damien/cours/rust".into(),
+                embedding_model: "bge-m3".into(),
+                documents: 42,
+                chunks: 1_318,
+                updated_at: 1_000,
+            }],
+            now: 1_000 + 2 * 3600,
+        }));
+        app.last_index = Some(IndexReport {
+            collection: "rust".into(),
+            files: 43,
+            added: 40,
+            updated: 2,
+            skipped: vec![("scans/tp1.pdf".into(), "PDF sans texte (scan ?)".into())],
+            passages: 1_318,
+            ..IndexReport::default()
+        });
+        insta::assert_snapshot!(draw(&mut app, 80, 24).backend());
+    }
+
+    #[test]
+    fn status_bar_shows_indexing_progress() {
+        use crate::rag::indexer::IndexEvent;
+        let mut app = App::new(&Config::default(), false);
+        let effects = app.run_command(crate::commands::CommandId::Index, "~/cours/rust");
+        assert_eq!(
+            effects,
+            vec![Effect::StartIndex {
+                collection: "rust".into(),
+                root: "~/cours/rust".into()
+            }]
+        );
+        app.update(Action::Index(IndexEvent::Progress {
+            collection: "rust".into(),
+            done: 12,
+            total: 40,
+            current: "ch03.pdf".into(),
+        }));
+        insta::assert_snapshot!(draw(&mut app, 100, 8).backend());
+        assert_eq!(app.update(Action::Cancel), vec![Effect::CancelIndex]);
     }
 }

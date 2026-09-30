@@ -38,6 +38,38 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE conversations ADD COLUMN context_start INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE messages ADD COLUMN source TEXT;
     "#,
+    // v4: document collections for retrieval (RAG), and the collection a conversation uses.
+    r#"
+    CREATE TABLE rag_collections (
+        id              INTEGER PRIMARY KEY,
+        name            TEXT NOT NULL UNIQUE,
+        root            TEXT NOT NULL,
+        embedding_model TEXT NOT NULL,
+        dims            INTEGER NOT NULL DEFAULT 0,
+        created_at      INTEGER NOT NULL,
+        updated_at      INTEGER NOT NULL
+    );
+    CREATE TABLE rag_documents (
+        id            INTEGER PRIMARY KEY,
+        collection_id INTEGER NOT NULL REFERENCES rag_collections (id) ON DELETE CASCADE,
+        path          TEXT NOT NULL,
+        size          INTEGER NOT NULL,
+        mtime         INTEGER NOT NULL,
+        hash          INTEGER NOT NULL,
+        indexed_at    INTEGER NOT NULL,
+        UNIQUE (collection_id, path)
+    );
+    CREATE TABLE rag_chunks (
+        id          INTEGER PRIMARY KEY,
+        document_id INTEGER NOT NULL REFERENCES rag_documents (id) ON DELETE CASCADE,
+        ordinal     INTEGER NOT NULL,
+        location    TEXT NOT NULL,
+        text        TEXT NOT NULL,
+        embedding   BLOB NOT NULL
+    );
+    CREATE INDEX rag_chunks_by_document ON rag_chunks (document_id);
+    ALTER TABLE conversations ADD COLUMN rag_collection TEXT;
+    "#,
 ];
 
 /// Latest schema version.

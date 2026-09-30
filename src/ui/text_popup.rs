@@ -1,4 +1,5 @@
-//! Scrollable read-only popups: help (F1), context details (/context), prompt (/prompt).
+//! Scrollable read-only popups: help (F1), context details (/context), prompt (/prompt),
+//! document collections (/collections).
 //!
 //! Content is built as already-wrapped lines for the popup width, so the number of lines
 //! (and hence the scroll limit) is known exactly — also from `App::update`, through
@@ -14,7 +15,7 @@ use ratatui::{
 
 use crate::{app::App, state::Overlay};
 
-use super::{context_view, help, prompt_view};
+use super::{collections_view, context_view, help, prompt_view};
 
 /// A text popup's content.
 struct TextPopup {
@@ -54,6 +55,10 @@ fn content(app: &App, overlay: &Overlay, inner_width: usize) -> Option<TextPopup
             title: " Prompt envoyé au modèle ",
             lines: prompt_view::lines(app, inner_width),
         }),
+        Overlay::Collections { .. } => Some(TextPopup {
+            title: " Collections de documents ",
+            lines: collections_view::lines(app, inner_width),
+        }),
         Overlay::ModelPicker(_) | Overlay::Palette(_) => None,
     }
 }
@@ -90,9 +95,10 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
         return;
     };
     let scroll = match overlay {
-        Overlay::Help { scroll } | Overlay::Context { scroll } | Overlay::Prompt { scroll } => {
-            *scroll
-        }
+        Overlay::Help { scroll }
+        | Overlay::Context { scroll }
+        | Overlay::Prompt { scroll }
+        | Overlay::Collections { scroll } => *scroll,
         Overlay::ModelPicker(_) | Overlay::Palette(_) => return,
     };
     let Some(popup) = content(app, overlay, inner_width(area, overlay)) else {

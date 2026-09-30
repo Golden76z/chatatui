@@ -9,6 +9,7 @@ use color_eyre::eyre::OptionExt;
 use crate::{
     files::Attachment,
     llm::{LlmEvent, ProviderModels, RequestId},
+    rag::indexer::IndexEvent,
     storage::StoreEvent,
 };
 use crossterm::event::Event as CrosstermEvent;
@@ -42,6 +43,8 @@ pub enum AppEvent {
     Storage(StoreEvent),
     /// Model lists of every provider.
     Models(Vec<ProviderModels>),
+    /// Progress of the indexing job.
+    Index(IndexEvent),
     /// A file to attach was read.
     FileRead(Result<Attachment, String>),
     /// Completions of a partial path.

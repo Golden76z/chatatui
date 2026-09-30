@@ -5,6 +5,7 @@ use crossterm::event::KeyEvent;
 use crate::{
     files::Attachment,
     llm::{LlmEvent, ProviderModels, RequestId, stream_task::CompletionJob},
+    rag::indexer::IndexEvent,
     storage::{StoreEvent, StoreRequest},
 };
 
@@ -68,6 +69,8 @@ pub enum Action {
     },
     /// A file requested with `/add` was read (or could not be).
     FileRead(Result<Attachment, String>),
+    /// Progress of the indexing job.
+    Index(IndexEvent),
     /// A key that is not a shortcut, forwarded to the text input.
     Edit(KeyEvent),
     /// Text pasted by the terminal (bracketed paste); inserted verbatim.
@@ -127,4 +130,8 @@ pub enum Effect {
     ReadFile(String),
     /// List the completions of a partial path.
     CompletePath(String),
+    /// Index a folder (`root` as typed; `~` allowed) into a collection.
+    StartIndex { collection: String, root: String },
+    /// Stop the running indexing job.
+    CancelIndex,
 }

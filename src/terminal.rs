@@ -75,10 +75,27 @@ fn reset_modes() {
     let _ = execute!(stdout(), DisableBracketedPaste);
 }
 
+thread_local! {
+    /// Set while [`quietly`] runs: panics are expected and contained there.
+    static QUIET: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Runs `f`, turning a panic into `None` without touching the terminal or printing
+/// anything. For third-party parsers (PDF…) that may panic on unusual input.
+pub fn quietly<T>(f: impl FnOnce() -> T) -> Option<T> {
+    QUIET.with(|quiet| quiet.set(true));
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+    QUIET.with(|quiet| quiet.set(false));
+    result.ok()
+}
+
 /// Chains a hook that resets our terminal modes before ratatui's own restoring hook runs.
 fn install_panic_hook() {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
+        if QUIET.with(std::cell::Cell::get) {
+            return; // contained by `quietly`
+        }
         reset_modes();
         previous(info);
     }));

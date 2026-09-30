@@ -1,0 +1,12 @@
+---
+source: src/ui/mod.rs
+expression: "draw(&mut app, 100, 8).backend()"
+---
+"                                              chatatui                                              "
+"                                     modèle : Ollama › llama3.2                                     "
+"                                                                                                    "
+"                            Écrivez un message ci-dessous pour commencer.                           "
+"╭ Message ─────────────────────────────────────────────────────────────────────────────────────────╮"
+"│ Écrivez votre message…                                                                           │"
+"╰──────────────────────────────────────────────────────────────────────────────────────────────────╯"
+" ● Prêt │ Ollama › llama3.2 │ ⟳ rust 12/40        Échap arrêter l'indexation · /collections détails "

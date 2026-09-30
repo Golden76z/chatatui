@@ -17,6 +17,8 @@ Claude is reached through the native Anthropic Messages API.
   conversation remembers its provider and model
 - Context tools: attach files (`/add`), empty (`/clear`) or summarize (`/compact`) the
   context, with a gauge of how full it is
+- Document indexing for RAG (`/index`, `/collections`): Markdown, text, source code, PDF,
+  Word and LibreOffice files, embedded locally by default
 - Configurable system prompt; network errors shown in the UI, never a crash
 
 ## Requirements
@@ -94,6 +96,30 @@ work: those keys configure the `ollama` provider.
 
 Conversations are stored in `~/.local/share/chatatui/chatatui.db`.
 
+### Document indexing (RAG)
+
+`/index <folder> [name]` walks a folder (respecting `.gitignore` and skipping hidden
+files), extracts the text of Markdown, text, source code, PDF, `.docx` and `.odt` files,
+splits it into passages that remember where they come from (`§ heading`, `p. 3`,
+`L12-40`), embeds them and stores them in the same database. Running it again only
+processes files that changed and drops the ones that disappeared. `Esc` stops a run; what
+was done is kept. Scanned PDFs (images without text) are reported as skipped.
+
+Embeddings come from Ollama by default, so documents never leave the machine:
+
+```sh
+ollama pull bge-m3
+```
+
+```toml
+[rag]
+embedding_provider = "ollama"   # any configured OpenAI-compatible provider
+embedding_model = "bge-m3"      # changing it re-indexes a collection on its next /index
+chunk_tokens = 800              # passage size
+```
+
+Using the replies' context (retrieval and citations) comes with the next milestone.
+
 ## Commands
 
 Type `/` in the input to see the commands (↑↓ to choose, `Tab` to complete, `Enter` to
@@ -109,6 +135,8 @@ run), or press `Ctrl+P` for the palette:
 | `/add <file>` | Attach a text file (≤ 256 KB) to the context; `Tab` completes the path |
 | `/clear` | Empty the context: messages stay on screen but are no longer sent |
 | `/compact` | Ask the model to summarize the history; the summary replaces it in the context |
+| `/index <folder> [name]` | Index a folder into a document collection (named after the folder by default); `Tab` completes the path, `Esc` stops |
+| `/collections` | Indexed collections, and the result of the last `/index` |
 | `/help` | Commands and key bindings (`F1`) |
 | `/quit` | Quit (`Ctrl+C`) |
 
@@ -120,7 +148,7 @@ Start a message with `//` to send text that begins with a slash.
 |---|---|
 | `Enter` | Send |
 | `Shift+Enter` / `Alt+Enter` / `Ctrl+J` | New line (`Shift+Enter` needs the kitty keyboard protocol) |
-| `Esc` | Close the popup or panel, otherwise cancel the running generation |
+| `Esc` | Close the popup or panel, otherwise cancel the running generation, otherwise stop indexing |
 | `Ctrl+N` | New conversation |
 | `Ctrl+L` | Conversation list (`↑`/`↓` to choose, `Enter` to open) |
 | `Ctrl+M` / `F2` | Choose the model (type to filter). `Ctrl+M` needs the kitty keyboard protocol |
@@ -153,6 +181,9 @@ ui::render(&App, frame)                   read-only
   provider receives the conversation and returns `ContextChunk { source, text }`s, which
   `prompt.rs` merges into the system message — the same path as files attached with
   `/add`. It runs inside the streaming task, so a slow retrieval never blocks the UI.
+- `rag/`: text extraction (`extract.rs`), passage splitting (`chunk.rs`), the `Embedder`
+  trait (`embed.rs`), the collection tables (`store.rs`) and the background indexing job
+  (`indexer.rs`, cancellable, reports progress as events).
 - `markdown/` + `transcript.rs`: markdown → wrapped lines, cached per message and width;
   while streaming only the last message is re-rendered, at most once per tick.
 - `storage/`: SQLite schema with migrations, and a worker thread that runs requests in

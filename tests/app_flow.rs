@@ -14,7 +14,11 @@ use chatatui::{
         mock::{MockLlmClient, MockReply},
         stream_task::{self, Backends},
     },
-    state::{MessageStatus, Role, Status},
+    rag::{
+        embed::HashEmbedder,
+        indexer::{self, IndexRequest},
+    },
+    state::{MessageStatus, Overlay, Role, Status},
     storage::Store,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -29,6 +33,9 @@ struct Harness {
     rx: mpsc::UnboundedReceiver<Event>,
     cancel: Option<CancellationToken>,
     store: Store,
+    /// Database file shared by the store and the indexer (`None`: in-memory store).
+    database: Option<std::path::PathBuf>,
+    index_cancel: Option<CancellationToken>,
 }
 
 impl Harness {
@@ -53,7 +60,17 @@ impl Harness {
             rx,
             cancel: None,
             store: Store::open_in_memory().expect("in-memory store"),
+            database: None,
+            index_cancel: None,
         }
+    }
+
+    /// A harness whose store lives in `path`, so that `/index` can run (hash embeddings).
+    fn with_database(path: &std::path::Path) -> Self {
+        let mut h = Self::new(Arc::new(MockLlmClient::new([])));
+        h.store = Store::open(path).expect("file store");
+        h.database = Some(path.to_owned());
+        h
     }
 
     fn dispatch(&mut self, action: Action) {
@@ -80,6 +97,30 @@ impl Harness {
                         token,
                         self.tx.clone(),
                     ));
+                }
+                Effect::StartIndex { collection, root } => {
+                    let database = self.database.clone().expect("a file database");
+                    let token = CancellationToken::new();
+                    self.index_cancel = Some(token.clone());
+                    let tx = self.tx.clone();
+                    tokio::spawn(indexer::run(
+                        IndexRequest {
+                            collection,
+                            root: root.into(),
+                            chunk_tokens: 200,
+                        },
+                        database,
+                        Arc::new(HashEmbedder::default()),
+                        token,
+                        move |event| {
+                            let _ = tx.send(Event::App(AppEvent::Index(event)));
+                        },
+                    ));
+                }
+                Effect::CancelIndex => {
+                    if let Some(token) = self.index_cancel.take() {
+                        token.cancel();
+                    }
                 }
                 Effect::CancelCompletion(_) => {
                     if let Some(token) = self.cancel.take() {
@@ -145,10 +186,20 @@ impl Harness {
             .await
             .expect("event within timeout")
             .expect("channel open");
-        let Event::App(AppEvent::Llm { request_id, event }) = event else {
-            panic!("unexpected event");
-        };
-        self.dispatch(Action::Llm { request_id, event });
+        match event {
+            Event::App(AppEvent::Llm { request_id, event }) => {
+                self.dispatch(Action::Llm { request_id, event });
+            }
+            Event::App(AppEvent::Index(event)) => self.dispatch(Action::Index(event)),
+            _ => panic!("unexpected event"),
+        }
+    }
+
+    /// Processes events until the indexing job ends.
+    async fn run_until_indexed(&mut self) {
+        while self.app.indexing.is_some() {
+            self.step().await;
+        }
     }
 
     /// Processes events until the generation ends.
@@ -678,4 +729,100 @@ async fn cancelled_compact_leaves_the_context_unchanged() {
         3,
         "system + question + answer: summary ignored"
     );
+}
+
+fn write_docs(dir: &std::path::Path) {
+    std::fs::write(dir.join("cours.md"), "# Cours\n\nL'ownership en Rust.").expect("write");
+    std::fs::write(dir.join("notes.txt"), "Les traits et les génériques.").expect("write");
+    std::fs::write(dir.join("image.bin"), [0u8, 159, 146, 150]).expect("write");
+}
+
+#[tokio::test]
+async fn index_builds_a_collection_listed_in_collections() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let docs = dir.path().join("docs");
+    std::fs::create_dir(&docs).expect("mkdir");
+    write_docs(&docs);
+    let mut h = Harness::with_database(&dir.path().join("db.sqlite"));
+
+    h.command(&format!("/index {}", docs.display()));
+    assert_eq!(
+        h.app.indexing.as_ref().map(|p| p.collection.as_str()),
+        Some("docs")
+    );
+    h.run_until_indexed().await;
+    let report = h.app.last_index.clone().expect("report");
+    assert_eq!((report.files, report.added), (2, 2));
+    assert!(
+        matches!(&h.app.status, Status::Info(m) if m.starts_with("« docs » indexée : 2 fichiers, 2 ajoutés"))
+    );
+
+    h.command("/collections");
+    assert!(matches!(h.app.overlay, Some(Overlay::Collections { .. })));
+    let (collections, _) = h.app.collections.clone().expect("listed");
+    assert_eq!(collections.len(), 1);
+    assert_eq!(collections[0].name, "docs");
+    assert_eq!(collections[0].documents, 2);
+
+    // A second run with an explicit name: nothing changed in the folder.
+    h.dispatch(Action::Cancel);
+    h.command(&format!("/index {} docs", docs.display()));
+    h.run_until_indexed().await;
+    let report = h.app.last_index.clone().expect("report");
+    assert_eq!((report.added, report.unchanged), (0, 2));
+}
+
+#[tokio::test]
+async fn index_refuses_a_second_run_and_escape_stops_it() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    write_docs(dir.path());
+    let mut h = Harness::with_database(&dir.path().join("db.sqlite"));
+    let root = dir.path().display().to_string();
+
+    h.command(&format!("/index {root} a"));
+    h.command(&format!("/index {root} b"));
+    assert!(matches!(&h.app.status, Status::Error(m) if m.contains("« a » déjà en cours")));
+
+    h.dispatch(Action::Cancel);
+    h.run_until_indexed().await;
+    // Either the job was stopped in time, or it had already finished.
+    assert!(matches!(&h.app.status, Status::Info(m)
+        if m == "indexation de « a » arrêtée" || m.starts_with("« a » indexée")));
+    assert!(h.app.indexing.is_none());
+}
+
+#[tokio::test]
+async fn index_of_a_missing_folder_fails_cleanly() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mut h = Harness::with_database(&dir.path().join("db.sqlite"));
+    h.command("/index /definitely/not/here");
+    h.run_until_indexed().await;
+    assert!(matches!(&h.app.status, Status::Error(m) if m.starts_with("indexation de « here »")));
+}
+
+#[tokio::test]
+async fn tab_completes_the_folder_after_index() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    std::fs::create_dir(dir.path().join("documents")).expect("mkdir");
+    let mut h = Harness::new(Arc::new(MockLlmClient::new([])));
+    for c in format!("/index {}/doc", dir.path().display()).chars() {
+        h.dispatch(Action::Edit(KeyEvent::new(
+            KeyCode::Char(c),
+            KeyModifiers::NONE,
+        )));
+    }
+    assert!(h.app.key_context().completing_path);
+    h.dispatch(Action::CompletePath);
+    assert_eq!(
+        h.app.input_text(),
+        format!("/index {}/documents/", dir.path().display())
+    );
+    // Once a name is being typed, Tab no longer completes paths.
+    for c in " nom".chars() {
+        h.dispatch(Action::Edit(KeyEvent::new(
+            KeyCode::Char(c),
+            KeyModifiers::NONE,
+        )));
+    }
+    assert!(!h.app.key_context().completing_path);
 }

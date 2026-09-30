@@ -99,7 +99,7 @@ tests/      app_flow.rs http_clients.rs fixtures/*.sse
   blocking tasks (`files.rs`).
 - Popups (model picker, palette, help) are one `Overlay` at a time and take the focus.
 - Esc closes the topmost overlay first: model popup, then conversation list, then cancels
-  the generation.
+  the generation, then stops indexing.
 - UI strings in French, code and comments in English. No `unwrap()` outside tests.
 
 ## Milestones
@@ -115,17 +115,17 @@ tests/      app_flow.rs http_clients.rs fixtures/*.sse
 | J7 ✅ | Providers: Ollama (default), OpenAI, Claude (native API); keys from env; grouped model picker |
 | J8 ✅ | Context visibility: measured/estimated tokens, context window, gauge, `/context`, `/prompt` |
 | J9 ✅ | Acting on context: `/add <file>`, `/clear`, `/compact` |
+| J10 ✅ | RAG indexing: `/index <folder> [name]` (md, text, code, PDF, docx, odt), incremental, progress + Esc, `/collections` |
+| J11 | Retrieval: `/rag <collection>\|off` per conversation, top-k cosine within a token budget, sources under replies, shown in `/prompt` and `/context` |
+| J12 | Hybrid search (FTS5 + vectors), change detection at startup, file-type filters, deleting a collection |
 
 Each milestone ends with `cargo fmt`, `cargo clippy --all-targets -- -D warnings`,
 `cargo test` passing.
 
-Out of scope for now: RAG, tool calling, themes.
+Out of scope for now: tool calling, themes.
 
 ## Next steps (ideas)
 
-- RAG: a `ContextProvider` that indexes documents (embeddings via `/v1/embeddings`,
-  vectors in SQLite), plus showing cited sources under replies. `/add` already uses the
-  same injection path.
 - Delete / rename conversations; search in history.
 - Copy the last reply or a code block to the clipboard.
 - Automatic `/compact` suggestion (or trigger) when the gauge passes 90 %.

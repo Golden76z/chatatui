@@ -19,6 +19,10 @@ pub enum Overlay {
     Prompt {
         scroll: u16,
     },
+    /// Indexed document collections (/collections).
+    Collections {
+        scroll: u16,
+    },
 }
 
 /// How the keymap should treat the open popup.
@@ -35,16 +39,20 @@ impl Overlay {
     pub fn kind(&self) -> OverlayKind {
         match self {
             Self::ModelPicker(_) | Self::Palette(_) => OverlayKind::List,
-            Self::Help { .. } | Self::Context { .. } | Self::Prompt { .. } => OverlayKind::Text,
+            Self::Help { .. }
+            | Self::Context { .. }
+            | Self::Prompt { .. }
+            | Self::Collections { .. } => OverlayKind::Text,
         }
     }
 
     /// Scroll position of a text popup.
     pub fn scroll_mut(&mut self) -> Option<&mut u16> {
         match self {
-            Self::Help { scroll } | Self::Context { scroll } | Self::Prompt { scroll } => {
-                Some(scroll)
-            }
+            Self::Help { scroll }
+            | Self::Context { scroll }
+            | Self::Prompt { scroll }
+            | Self::Collections { scroll } => Some(scroll),
             Self::ModelPicker(_) | Self::Palette(_) => None,
         }
     }

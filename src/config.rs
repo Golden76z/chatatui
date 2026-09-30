@@ -27,6 +27,14 @@ connect_timeout_secs = 5
 # with the mouse. Set to false to keep the terminal's native selection.
 mouse_capture = true
 
+# Document search (/index, /collections). Embeddings are computed by an OpenAI-compatible
+# provider, locally with Ollama by default: `ollama pull bge-m3` first (multilingual,
+# good for French). Changing the model re-indexes a collection from scratch.
+# [rag]
+# embedding_provider = "ollama"
+# embedding_model = "bge-m3"
+# chunk_tokens = 800
+
 # Providers. "ollama", "openai" (ChatGPT) and "claude" are predefined: the sections below
 # only override their settings. Add your own OpenAI-compatible server the same way, e.g.
 #   [providers.lmstudio]
@@ -209,6 +217,8 @@ pub struct Config {
     pub system_prompt: String,
     pub connect_timeout_secs: u64,
     pub mouse_capture: bool,
+    /// `[rag]` section: document search settings.
+    pub rag: crate::rag::RagConfig,
     /// `[providers.*]` sections; absent means none (not the default `ollama` section), so
     /// that the legacy top-level keys below still apply.
     #[serde(default)]
@@ -234,6 +244,7 @@ impl Default for Config {
                     .to_owned(),
             connect_timeout_secs: 5,
             mouse_capture: true,
+            rag: crate::rag::RagConfig::default(),
             providers: BTreeMap::from([("ollama".to_owned(), ollama)]),
             base_url: None,
             model: None,

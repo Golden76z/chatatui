@@ -37,7 +37,7 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
         ),
         Span::raw(app.model_display()),
     ]);
-    let left = with_gauge(app, left);
+    let left = with_indexing(app, with_gauge(app, left));
 
     // State and model take priority over hints: the first hint set that fits is shown.
     let style = Style::default().bg(Color::Black);
@@ -91,6 +91,24 @@ fn with_gauge(app: &App, mut line: Line<'static>) -> Line<'static> {
     line
 }
 
+/// Appends the indexing progress (`⟳ cours 12/40`) while `/index` runs.
+fn with_indexing(app: &App, mut line: Line<'static>) -> Line<'static> {
+    let Some(progress) = &app.indexing else {
+        return line;
+    };
+    line.push_span(Span::styled(" │ ", Style::default().fg(Color::DarkGray)));
+    let count = if progress.total == 0 {
+        "…".to_owned()
+    } else {
+        format!("{}/{}", progress.done, progress.total)
+    };
+    line.push_span(Span::styled(
+        format!("⟳ {} {count}", progress.collection),
+        Style::default().fg(Color::Magenta),
+    ));
+    line
+}
+
 /// Hints for the current context, most complete first.
 fn hint_candidates(app: &App) -> Vec<String> {
     let newline_key = if app.keyboard_enhanced {
@@ -105,7 +123,12 @@ fn hint_candidates(app: &App) -> Vec<String> {
                 "Échap fermer ".into(),
             ];
         }
-        Some(Overlay::Help { .. } | Overlay::Context { .. } | Overlay::Prompt { .. }) => {
+        Some(
+            Overlay::Help { .. }
+            | Overlay::Context { .. }
+            | Overlay::Prompt { .. }
+            | Overlay::Collections { .. },
+        ) => {
             return vec![
                 "↑↓ PgUp PgDn défiler · Échap fermer ".into(),
                 "Échap fermer ".into(),
@@ -129,6 +152,12 @@ fn hint_candidates(app: &App) -> Vec<String> {
         return vec![
             "Échap annuler · Ctrl+C quitter ".into(),
             "Échap annuler ".into(),
+        ];
+    }
+    if app.indexing.is_some() && app.input.is_empty() {
+        return vec![
+            "Échap arrêter l'indexation · /collections détails ".into(),
+            "Échap arrêter ".into(),
         ];
     }
     vec![
