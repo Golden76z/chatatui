@@ -22,6 +22,7 @@ pub mod keymap;
 pub mod layout;
 pub mod llm;
 pub mod markdown;
+pub mod mcp;
 pub mod prompt;
 pub mod rag;
 pub mod runtime;

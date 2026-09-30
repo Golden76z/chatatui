@@ -27,27 +27,27 @@ const MAX_ENTRIES: usize = 300;
 pub fn specs() -> Vec<ToolSpec> {
     vec![
         ToolSpec {
-            name: READ_FILE,
+            name: READ_FILE.into(),
             description: "Read a UTF-8 text file on the user's computer (code, notes, \
-                          Markdown, config…). Paths may start with ~.",
-            parameters: r#"{"type":"object","properties":{"path":{"type":"string","description":"File path"}},"required":["path"]}"#,
+                          Markdown, config…). Paths may start with ~.".into(),
+            parameters: r#"{"type":"object","properties":{"path":{"type":"string","description":"File path"}},"required":["path"]}"#.into(),
         },
         ToolSpec {
-            name: LIST_DIR,
+            name: LIST_DIR.into(),
             description: "List the files and folders of a directory on the user's computer \
-                          (folders end with /). Paths may start with ~.",
-            parameters: r#"{"type":"object","properties":{"path":{"type":"string","description":"Directory path"}},"required":["path"]}"#,
+                          (folders end with /). Paths may start with ~.".into(),
+            parameters: r#"{"type":"object","properties":{"path":{"type":"string","description":"Directory path"}},"required":["path"]}"#.into(),
         },
         ToolSpec {
-            name: FETCH_URL,
-            description: "Read a web page (http or https) and return its text.",
-            parameters: r#"{"type":"object","properties":{"url":{"type":"string","description":"Page address"}},"required":["url"]}"#,
+            name: FETCH_URL.into(),
+            description: "Read a web page (http or https) and return its text.".into(),
+            parameters: r#"{"type":"object","properties":{"url":{"type":"string","description":"Page address"}},"required":["url"]}"#.into(),
         },
         ToolSpec {
-            name: SEARCH_DOCUMENTS,
+            name: SEARCH_DOCUMENTS.into(),
             description: "Search the user's indexed documents (courses, notes, PDFs) and \
-                          return the most relevant passages with their source.",
-            parameters: r#"{"type":"object","properties":{"query":{"type":"string","description":"What to look for"},"collection":{"type":"string","description":"Collection name (default: the conversation's)"}},"required":["query"]}"#,
+                          return the most relevant passages with their source.".into(),
+            parameters: r#"{"type":"object","properties":{"query":{"type":"string","description":"What to look for"},"collection":{"type":"string","description":"Collection name (default: the conversation's)"}},"required":["query"]}"#.into(),
         },
     ]
 }
@@ -106,7 +106,35 @@ pub fn describe(call: &ToolCall) -> String {
                 None => format!("chercher « {} » dans les documents", a.query),
             },
         ),
-        other => format!("outil inconnu : {other}"),
+        other => match other.split_once(crate::mcp::SEPARATOR) {
+            Some((server, tool)) => describe_mcp(server, tool, &call.arguments),
+            None => format!("outil inconnu : {other}"),
+        },
+    }
+}
+
+/// `git › git_log (repo_path: ~/projet, max_count: 5)`: an MCP call, its arguments shortened.
+fn describe_mcp(server: &str, tool: &str, arguments: &str) -> String {
+    const MAX_ARGS: usize = 120;
+    let args = match serde_json::from_str::<serde_json::Value>(arguments) {
+        Ok(serde_json::Value::Object(map)) => map
+            .iter()
+            .map(|(key, value)| match value {
+                serde_json::Value::String(text) => format!("{key}: {text}"),
+                other => format!("{key}: {other}"),
+            })
+            .collect::<Vec<_>>()
+            .join(", "),
+        _ => String::new(),
+    };
+    let mut args: String = args.chars().take(MAX_ARGS).collect();
+    if args.chars().count() == MAX_ARGS {
+        args.push('…');
+    }
+    if args.is_empty() {
+        format!("utiliser {server} › {tool}")
+    } else {
+        format!("utiliser {server} › {tool} ({args})")
     }
 }
 
@@ -291,7 +319,7 @@ mod tests {
     fn specs_are_valid_json_schemas() {
         for spec in specs() {
             let schema: serde_json::Value =
-                serde_json::from_str(spec.parameters).expect("valid JSON");
+                serde_json::from_str(&spec.parameters).expect("valid JSON");
             assert_eq!(schema["type"], "object", "{}", spec.name);
         }
     }
@@ -330,6 +358,27 @@ mod tests {
         for path in ["/home/d/cours/ch1.md", "/p/src/keymap.rs"] {
             assert!(!is_sensitive(Path::new(path)), "{path}");
         }
+    }
+
+    #[test]
+    fn mcp_calls_are_described_with_their_server() {
+        let call = |name: &str, arguments: &str| ToolCall {
+            id: "c".into(),
+            name: name.into(),
+            arguments: arguments.into(),
+        };
+        assert_eq!(
+            describe(&call(
+                "git__git_log",
+                r#"{"repo_path":"~/projet","max_count":5}"#
+            )),
+            "utiliser git › git_log (max_count: 5, repo_path: ~/projet)"
+        );
+        assert_eq!(describe(&call("x__ping", "{}")), "utiliser x › ping");
+        assert!(
+            describe(&call("x__y", &format!(r#"{{"t":"{}"}}"#, "a".repeat(300)))).ends_with("…)")
+        );
+        assert_eq!(describe(&call("inconnu", "{}")), "outil inconnu : inconnu");
     }
 
     #[tokio::test]

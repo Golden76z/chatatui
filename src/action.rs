@@ -79,6 +79,8 @@ pub enum Action {
     FileRead(Result<Attachment, String>),
     /// Files of these collections changed on disk (`[rag] auto_index`).
     CollectionsChanged(Vec<String>),
+    /// An MCP server changed state.
+    Mcp(crate::mcp::McpStatus),
     /// Result of [`Effect::Export`]: the path written, or a user-facing error.
     Exported(Result<String, String>),
     /// Answer to a tool call: `always` allows the next ones of this conversation too.

@@ -44,10 +44,10 @@ pub struct ToolCall {
 /// A tool offered to the model.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ToolSpec {
-    pub name: &'static str,
-    pub description: &'static str,
+    pub name: String,
+    pub description: String,
     /// JSON Schema of the arguments.
-    pub parameters: &'static str,
+    pub parameters: String,
 }
 
 /// A message sent to the model (converted to each API's format by its client).

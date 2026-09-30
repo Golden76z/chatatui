@@ -52,6 +52,8 @@ pub struct Runtime {
     running_index: Option<CancellationToken>,
     /// Watch over the collections' folders (`[rag] auto_index`).
     watch: Option<crate::rag::watch::Watch>,
+    /// MCP servers to start.
+    mcp: Vec<(String, crate::config::McpServerConfig)>,
 }
 
 /// The embedding backend and database file used by indexing, or why indexing is unavailable.
@@ -136,6 +138,7 @@ impl Runtime {
         let backends = stream_task::Backends {
             clients,
             context: Arc::new(context),
+            mcp: Arc::default(),
         };
         let events = EventHandler::new();
         let sender = events.sender();
@@ -153,6 +156,12 @@ impl Runtime {
             rag,
             running_index: None,
             watch: None,
+            mcp: config
+                .mcp
+                .iter()
+                .filter(|(_, server)| server.enabled)
+                .map(|(name, server)| (name.clone(), server.clone()))
+                .collect(),
         })
     }
 
@@ -165,6 +174,7 @@ impl Runtime {
         });
         self.dispatch(Action::Init);
         self.refresh_watch();
+        self.start_mcp();
         let mut needs_redraw = true;
         while self.app.running {
             if needs_redraw {
@@ -221,6 +231,7 @@ impl Runtime {
                 }
                 Some(Action::Storage(event))
             }
+            Event::App(AppEvent::Mcp(status)) => Some(Action::Mcp(status)),
             Event::App(AppEvent::CollectionsChanged(names)) => {
                 Some(Action::CollectionsChanged(names))
             }
@@ -523,6 +534,20 @@ impl Runtime {
                 let _ = sender.send(Event::App(AppEvent::Index(event)));
             },
         ));
+    }
+}
+
+impl Runtime {
+    /// Starts the configured MCP servers in the background.
+    fn start_mcp(&mut self) {
+        for (name, config) in std::mem::take(&mut self.mcp) {
+            let registry = self.backends.mcp.clone();
+            let sender = self.events.sender();
+            tokio::spawn(crate::mcp::start(registry, name, config, move |status| {
+                // Fails only while shutting down.
+                let _ = sender.send(Event::App(AppEvent::Mcp(status)));
+            }));
+        }
     }
 }
 

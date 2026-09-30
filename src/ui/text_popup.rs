@@ -15,7 +15,7 @@ use ratatui::{
 
 use crate::{app::App, state::Overlay};
 
-use super::{collections_view, context_view, help, prompt_view};
+use super::{collections_view, context_view, help, mcp_view, prompt_view};
 
 /// A text popup's content.
 struct TextPopup {
@@ -59,6 +59,10 @@ fn content(app: &App, overlay: &Overlay, inner_width: usize) -> Option<TextPopup
             title: " Collections de documents ",
             lines: collections_view::lines(app, inner_width),
         }),
+        Overlay::Mcp { .. } => Some(TextPopup {
+            title: " Serveurs MCP ",
+            lines: mcp_view::lines(app, inner_width),
+        }),
         Overlay::ModelPicker(_) | Overlay::Palette(_) | Overlay::ToolConfirm { .. } => None,
     }
 }
@@ -98,7 +102,8 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
         Overlay::Help { scroll }
         | Overlay::Context { scroll }
         | Overlay::Prompt { scroll }
-        | Overlay::Collections { scroll } => *scroll,
+        | Overlay::Collections { scroll }
+        | Overlay::Mcp { scroll } => *scroll,
         Overlay::ModelPicker(_) | Overlay::Palette(_) | Overlay::ToolConfirm { .. } => return,
     };
     let Some(popup) = content(app, overlay, inner_width(area, overlay)) else {

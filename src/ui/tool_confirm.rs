@@ -31,6 +31,12 @@ pub fn render(
         ]),
         Line::styled(format!(" outil : {tool}"), dim),
     ];
+    if tool.contains(crate::mcp::SEPARATOR) {
+        lines.push(Line::styled(
+            " ⚠ outil d'un serveur MCP : il peut aussi modifier ou envoyer des données",
+            Style::default().fg(p.warn),
+        ));
+    }
     if cloud {
         lines.push(Line::styled(
             format!(

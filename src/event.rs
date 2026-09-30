@@ -51,6 +51,8 @@ pub enum AppEvent {
     FileRead(Result<Attachment, String>),
     /// Files of these collections changed on disk (`[rag] auto_index`).
     CollectionsChanged(Vec<String>),
+    /// An MCP server started, failed or is starting.
+    Mcp(crate::mcp::McpStatus),
     /// Result of [`crate::action::Effect::Export`].
     Exported(Result<String, String>),
     /// Result of [`crate::action::Effect::Copy`].

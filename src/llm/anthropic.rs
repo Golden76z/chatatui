@@ -178,7 +178,7 @@ impl LlmClient for AnthropicClient {
                     .map(|t| json!({
                         "name": t.name,
                         "description": t.description,
-                        "input_schema": serde_json::from_str::<serde_json::Value>(t.parameters)
+                        "input_schema": serde_json::from_str::<serde_json::Value>(&t.parameters)
                             .unwrap_or_else(|_| json!({ "type": "object" })),
                     }))
                     .collect::<Vec<_>>()

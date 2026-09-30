@@ -58,6 +58,7 @@ impl Harness {
             backends: Backends {
                 clients,
                 context: Arc::new(NoContext),
+                mcp: Arc::default(),
             },
             tx,
             rx,

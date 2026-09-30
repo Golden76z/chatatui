@@ -11,6 +11,7 @@ mod collections_view;
 mod context_view;
 mod find_bar;
 mod help;
+mod mcp_view;
 mod model_picker;
 mod palette;
 mod prompt_view;
@@ -52,7 +53,8 @@ pub fn render(app: &App, frame: &mut Frame) {
             Overlay::Help { .. }
             | Overlay::Context { .. }
             | Overlay::Prompt { .. }
-            | Overlay::Collections { .. },
+            | Overlay::Collections { .. }
+            | Overlay::Mcp { .. },
         ) => {
             text_popup::render(app, frame, frame.area());
         }
@@ -314,6 +316,45 @@ mod tests {
             .find(|&x| cell(x, row).symbol() == "t" && cell(x + 1, row).symbol() == "r")
             .expect("match");
         assert_eq!(cell(x, row).bg, crate::theme::palette().badge_bg);
+    }
+
+    #[test]
+    fn mcp_popup_lists_servers_and_tools() {
+        use crate::mcp::{McpStatus, McpTool, ServerState};
+        let mut config = Config::default();
+        for (name, enabled) in [("git", true), ("casse", true), ("eteint", false)] {
+            config.mcp.insert(
+                name.into(),
+                crate::config::McpServerConfig {
+                    command: "x".into(),
+                    enabled,
+                    ..Default::default()
+                },
+            );
+        }
+        let mut app = App::new(&config, false);
+        app.update(Action::Mcp(McpStatus {
+            server: "casse".into(),
+            state: ServerState::Failed("« uvx » introuvable (installé ?)".into()),
+        }));
+        app.update(Action::Mcp(McpStatus {
+            server: "git".into(),
+            state: ServerState::Ready {
+                info: "mcp-git 1.2".into(),
+                tools: vec![McpTool {
+                    name: "git_status".into(),
+                    exposed: "git__git_status".into(),
+                    description: "Shows the working tree status".into(),
+                    schema: "{}".into(),
+                }],
+            },
+        }));
+        assert!(
+            matches!(&app.status, crate::state::Status::Error(m) if m.contains("casse")),
+            "the failure stays in view"
+        );
+        app.run_command(crate::commands::CommandId::Mcp, "");
+        insta::assert_snapshot!(draw(&mut app, 80, 16).backend());
     }
 
     #[test]

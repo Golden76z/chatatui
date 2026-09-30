@@ -1,0 +1,20 @@
+---
+source: src/ui/mod.rs
+expression: "draw(&mut app, 80, 16).backend()"
+---
+"                                                                                "
+"                                                                                "
+"  ╭ Serveurs MCP ────────────────────────────────────────────────────────────╮  "
+"  │ casse  ✖ échec                                                           │  "
+"  │   « uvx » introuvable (installé ?)                                       │  "
+"  │                                                                          │  "
+"  │ eteint  désactivé                                                        │  "
+"  │                                                                          │  "
+"  │ git  ✓ 1 outil(s) · mcp-git 1.2                                          │  "
+"  │   git_status  Shows the working tree status                              │  "
+"  │                                                                          │  "
+"  │ Outils désactivés : /tools on pour les proposer au modèle (chaque appel  │  "
+"╭ │ vous est demandé).                                                       │─╮"
+"│ ╰──────────────────────────────────────────────────────────── Échap fermer ╯ │"
+"╰──────────────────────────────────────────────────────────────────────────────╯"
+" ✖ MCP « casse » : « uvx » introuvable (installé ?) │ Ollama › llama3.2         "

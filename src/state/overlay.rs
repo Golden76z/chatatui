@@ -23,6 +23,10 @@ pub enum Overlay {
     Collections {
         scroll: u16,
     },
+    /// MCP servers and their tools (/mcp).
+    Mcp {
+        scroll: u16,
+    },
     /// The model asks to run a tool: allow, always allow or refuse.
     ToolConfirm {
         /// What the call does (`lire ~/notes.md`).
@@ -52,7 +56,8 @@ impl Overlay {
             Self::Help { .. }
             | Self::Context { .. }
             | Self::Prompt { .. }
-            | Self::Collections { .. } => OverlayKind::Text,
+            | Self::Collections { .. }
+            | Self::Mcp { .. } => OverlayKind::Text,
             Self::ToolConfirm { .. } => OverlayKind::Confirm,
         }
     }
@@ -63,7 +68,8 @@ impl Overlay {
             Self::Help { scroll }
             | Self::Context { scroll }
             | Self::Prompt { scroll }
-            | Self::Collections { scroll } => Some(scroll),
+            | Self::Collections { scroll }
+            | Self::Mcp { scroll } => Some(scroll),
             Self::ModelPicker(_) | Self::Palette(_) | Self::ToolConfirm { .. } => None,
         }
     }

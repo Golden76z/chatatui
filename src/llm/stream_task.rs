@@ -53,6 +53,8 @@ pub struct Backends {
     /// One client per provider id.
     pub clients: Clients,
     pub context: Arc<dyn ContextProvider>,
+    /// MCP servers and their tools.
+    pub mcp: Arc<crate::mcp::Registry>,
 }
 
 impl Backends {
@@ -65,6 +67,7 @@ impl Backends {
         Self {
             clients: Clients::from([(provider.to_owned(), llm)]),
             context,
+            mcp: Arc::default(),
         }
     }
 }
@@ -152,7 +155,9 @@ async fn generate(
         )));
     };
     let tools = if job.tools && job.kind == JobKind::Reply && decisions.is_some() {
-        crate::tools::specs()
+        let mut tools = crate::tools::specs();
+        tools.extend(backends.mcp.specs());
+        tools
     } else {
         Vec::new()
     };
@@ -236,12 +241,17 @@ async fn generate(
                 return;
             };
             let output = if allowed {
-                crate::tools::run(
-                    &call,
-                    backends.context.as_ref(),
-                    job.rag_collection.as_deref(),
-                )
-                .await
+                match backends.mcp.call(&call).await {
+                    Some(output) => output,
+                    None => {
+                        crate::tools::run(
+                            &call,
+                            backends.context.as_ref(),
+                            job.rag_collection.as_deref(),
+                        )
+                        .await
+                    }
+                }
             } else {
                 crate::tools::ToolOutput {
                     ok: false,

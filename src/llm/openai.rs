@@ -256,7 +256,7 @@ fn wire_tools(tools: &[ToolSpec]) -> serde_json::Value {
                 "function": {
                     "name": t.name,
                     "description": t.description,
-                    "parameters": serde_json::from_str::<serde_json::Value>(t.parameters)
+                    "parameters": serde_json::from_str::<serde_json::Value>(&t.parameters)
                         .unwrap_or_else(|_| json!({ "type": "object" })),
                 },
             }))

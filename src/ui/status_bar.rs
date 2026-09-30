@@ -204,7 +204,8 @@ fn hint_candidates(app: &App) -> Vec<String> {
             Overlay::Help { .. }
             | Overlay::Context { .. }
             | Overlay::Prompt { .. }
-            | Overlay::Collections { .. },
+            | Overlay::Collections { .. }
+            | Overlay::Mcp { .. },
         ) => {
             return vec![
                 "↑↓ PgUp PgDn défiler · Échap fermer ".into(),

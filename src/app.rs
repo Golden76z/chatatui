@@ -11,7 +11,7 @@
 //! (complete, cancelled or failed). A conversation gets its id — and is stored — with its
 //! first message.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use ratatui::{
     layout::Rect,
@@ -364,6 +364,8 @@ pub struct App {
     pub tails: Vec<Tail>,
     /// Offer tools to the model (`/tools`).
     pub tools_enabled: bool,
+    /// `[mcp.*]` servers: their state, `None` when disabled in the configuration.
+    pub mcp_servers: BTreeMap<String, Option<crate::mcp::ServerState>>,
     /// Messages sent before (all conversations), oldest first, for `Ctrl+↑`.
     pub input_history: Vec<String>,
     /// Position in `input_history` while browsing it, and the text typed before.
@@ -453,6 +455,14 @@ impl App {
             editing: None,
             tails: Vec::new(),
             tools_enabled: config.tools.enabled,
+            mcp_servers: config
+                .mcp
+                .iter()
+                .map(|(name, server)| {
+                    let state = server.enabled.then_some(crate::mcp::ServerState::Starting);
+                    (name.clone(), state)
+                })
+                .collect(),
             input_history: Vec::new(),
             history_cursor: None,
             timing: None,
@@ -943,7 +953,8 @@ impl App {
                     Overlay::Help { .. }
                     | Overlay::Context { .. }
                     | Overlay::Prompt { .. }
-                    | Overlay::Collections { .. },
+                    | Overlay::Collections { .. }
+                    | Overlay::Mcp { .. },
                 ) => {
                     self.overlay = None;
                     Vec::new()
@@ -1153,6 +1164,10 @@ impl App {
                 effects
             }
             Action::PreviousVersion => self.switch_version(false),
+            Action::Mcp(status) => {
+                self.on_mcp_status(status);
+                Vec::new()
+            }
             Action::OpenFind => self.open_find(None),
             Action::FindType(c) => self.find_edit(|query| query.push(c)),
             Action::FindBackspace => self.find_edit(|query| {
@@ -1302,6 +1317,10 @@ impl App {
             CommandId::Edit => self.start_edit(),
             CommandId::Retry => self.retry(arg.trim()),
             CommandId::Export => self.export(arg.trim()),
+            CommandId::Mcp => {
+                self.overlay = Some(Overlay::Mcp { scroll: 0 });
+                Vec::new()
+            }
             CommandId::Find => {
                 let arg = arg.trim();
                 self.open_find((!arg.is_empty()).then_some(arg))
@@ -1550,6 +1569,31 @@ impl App {
         self.retrieved = None;
         self.status = Status::Info(format!("version {target}/{total}"));
         effects
+    }
+
+    /// An MCP server is ready or failed: says so in the status bar.
+    fn on_mcp_status(&mut self, status: crate::mcp::McpStatus) {
+        use crate::mcp::ServerState;
+        let name = &status.server;
+        match &status.state {
+            ServerState::Starting => {}
+            // A failure of another server stays in view.
+            ServerState::Ready { .. } if matches!(self.status, Status::Error(_)) => {}
+            ServerState::Ready { tools, .. } => {
+                let hint = if self.tools_enabled {
+                    ""
+                } else {
+                    " (/tools on pour les proposer au modèle)"
+                };
+                self.status =
+                    Status::Info(format!("MCP « {name} » : {} outil(s){hint}", tools.len()));
+            }
+            ServerState::Failed(error) => {
+                self.status = Status::Error(format!("MCP « {name} » : {error}"));
+            }
+        }
+        self.mcp_servers
+            .insert(status.server.clone(), Some(status.state));
     }
 
     /// Ctrl+F / `/find [texte]`: opens the find bar, or goes to the next match when it

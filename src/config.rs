@@ -43,6 +43,16 @@ auto_compact = false
 # [tools]
 # enabled = false
 
+# MCP servers: their tools are offered with the built-in ones (/tools on), each call
+# confirmed. /mcp shows their state. For example (needs Node.js):
+# [mcp.fichiers]
+# command = "npx"
+# args = ["-y", "@modelcontextprotocol/server-filesystem", "~/Documents"]
+# [mcp.git]                # needs uv (https://docs.astral.sh/uv/)
+# command = "uvx"
+# args = ["mcp-server-git", "--repository", "~/projet"]
+# env = { TOKEN = "…" }     # extra environment variables, if the server needs some
+
 # Named system prompts, chosen per conversation with /persona <name>:
 # [prompts]
 # prof = "Tu es un professeur de Rust patient. Explique pas à pas, avec des exemples."
@@ -299,6 +309,40 @@ pub struct ToolsConfig {
     pub enabled: bool,
 }
 
+/// `[mcp.<name>]` section: an MCP server started by chatatui (stdio transport). Its tools
+/// are offered to the model next to the built-in ones, each call confirmed.
+#[derive(Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct McpServerConfig {
+    /// Program to run, e.g. `npx` or `uvx`.
+    pub command: String,
+    pub args: Vec<String>,
+    /// Extra environment variables (tokens for the server…).
+    pub env: BTreeMap<String, String>,
+    /// Working directory (default: chatatui's).
+    pub cwd: Option<String>,
+    /// `false` keeps the section without starting the server.
+    #[serde(default = "enabled")]
+    pub enabled: bool,
+}
+
+fn enabled() -> bool {
+    true
+}
+
+/// Environment values often are tokens: only their names are shown.
+impl std::fmt::Debug for McpServerConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("McpServerConfig")
+            .field("command", &self.command)
+            .field("args", &self.args)
+            .field("env", &self.env.keys().collect::<Vec<_>>())
+            .field("cwd", &self.cwd)
+            .field("enabled", &self.enabled)
+            .finish()
+    }
+}
+
 /// Application configuration. Missing keys fall back to their defaults.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -315,6 +359,8 @@ pub struct Config {
     pub auto_compact: bool,
     /// `[tools]` section: tools the model may call.
     pub tools: ToolsConfig,
+    /// `[mcp.*]` sections: MCP servers providing more tools.
+    pub mcp: BTreeMap<String, McpServerConfig>,
     /// `[prompts]` section: named system prompts (`/persona <name>`).
     pub prompts: BTreeMap<String, String>,
     /// `[rag]` section: document search settings.
@@ -348,6 +394,7 @@ impl Default for Config {
             compact_threshold: 90,
             auto_compact: false,
             tools: ToolsConfig::default(),
+            mcp: BTreeMap::new(),
             prompts: BTreeMap::new(),
             rag: crate::rag::RagConfig::default(),
             providers: BTreeMap::from([("ollama".to_owned(), ollama)]),
@@ -604,6 +651,19 @@ mod tests {
         let text = "system_prompt = '''\nLigne 1\nLigne 2'''\n";
         let parsed = Config::from_toml(text).expect("parses");
         assert_eq!(parsed.system_prompt, "Ligne 1\nLigne 2");
+    }
+
+    #[test]
+    fn mcp_servers_are_read_without_showing_their_secrets() {
+        let text = "[mcp.git]\ncommand = \"uvx\"\nargs = [\"mcp-server-git\"]\n\
+                    env = { TOKEN = \"s3cret\" }\n[mcp.off]\ncommand = \"x\"\nenabled = false\n";
+        let parsed = Config::from_toml(text).expect("parses");
+        let git = &parsed.mcp["git"];
+        assert_eq!(git.args, vec!["mcp-server-git"]);
+        assert!(git.enabled, "enabled by default");
+        assert!(!parsed.mcp["off"].enabled);
+        assert!(!format!("{parsed:?}").contains("s3cret"));
+        assert!(Config::from_toml("[mcp.x]\ncomand = \"typo\"").is_err());
     }
 
     #[test]

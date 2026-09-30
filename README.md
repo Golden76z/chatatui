@@ -221,6 +221,34 @@ OpenAI `tools` / `tool_calls` format (OpenAI, Ollama, llama.cpp, LM Studio, vLLM
 Claude's `tool_use` blocks; models without tool support reject the request, hence off by
 default.
 
+### MCP servers
+
+Servers speaking the [Model Context Protocol](https://modelcontextprotocol.io) add their
+tools to the built-in ones. Each `[mcp.<name>]` section starts one at launch (stdio
+transport):
+
+```toml
+[mcp.fichiers]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "~/Documents"]
+
+[mcp.git]
+command = "uvx"
+args = ["mcp-server-git", "--repository", "~/projet"]
+
+[mcp.autre]
+command = "mon-serveur"
+env = { API_TOKEN = "…" }   # extra environment variables
+cwd = "~/outils"            # working directory
+enabled = false             # keep the section without starting it
+```
+
+`/mcp` shows each server's state (starting, ready with its tools, or why it failed). Their
+tools reach the model as `<server>__<tool>` once `/tools on`; every call is confirmed like
+the others, and the popup warns that a server's tool may also change or send data (unlike
+the built-in ones, which only read). `~` is expanded in `command`, `args` and `cwd`. The
+servers stop with chatatui.
+
 ## Commands
 
 Type `/` in the input to see the commands (↑↓ to choose, `Tab` to complete, `Enter` to
@@ -233,6 +261,7 @@ run), or press `Ctrl+P` for the palette:
 | `/rename <title>` | Rename the conversation |
 | `/persona [name\|off]` | Use a named system prompt from `[prompts]` in this conversation, or go back to `system_prompt` |
 | `/tools [on\|off]` | Let the model read files, list folders and search your documents (each call confirmed) |
+| `/mcp` | MCP servers: state and tools |
 | `/edit` | Put your last message back in the input: sending it replaces it and what followed (`Esc` cancels); the old version is kept (`Alt+←`) |
 | `/retry [model]` | Replace the last reply with a new one, from another model if given (`/retry claude`); the old reply is kept (`Alt+←`) |
 | `/export [file.md]` | Save the conversation as Markdown (named after its title by default; never overwrites) |

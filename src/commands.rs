@@ -21,6 +21,7 @@ pub enum CommandId {
     Copy,
     Persona,
     Tools,
+    Mcp,
     Edit,
     Retry,
     Export,
@@ -229,6 +230,15 @@ pub const COMMANDS: &[CommandSpec] = &[
         aliases: &["outils"],
         arg: Arg::Optional("[on|off]"),
         description: "Laisser le modèle lire des fichiers et chercher dans vos documents",
+        shortcut: None,
+        legacy_shortcut: None,
+    },
+    CommandSpec {
+        id: CommandId::Mcp,
+        name: "mcp",
+        aliases: &[],
+        arg: Arg::None,
+        description: "Serveurs MCP et leurs outils",
         shortcut: None,
         legacy_shortcut: None,
     },
@@ -453,7 +463,7 @@ mod tests {
         );
         assert_eq!(
             names(&suggestions("/m")),
-            vec!["model", "edit"],
+            vec!["model", "mcp", "edit"],
             "edit via its « modifier » alias"
         );
         assert_eq!(names(&suggestions("/h")), vec!["history", "help"]);
