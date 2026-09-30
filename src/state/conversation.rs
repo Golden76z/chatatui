@@ -1,11 +1,13 @@
 //! Conversation and message model.
 
 /// Stable identifier of a message inside a conversation (used as a render-cache key).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub struct MessageId(pub u64);
 
 /// Kind of a message.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Role {
     System,
     User,
@@ -19,7 +21,7 @@ pub enum Role {
 }
 
 /// Lifecycle of a message.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum MessageStatus {
     /// Fully written.
     Complete,
@@ -79,7 +81,7 @@ impl Citation {
 }
 
 /// A single chat message.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Message {
     pub id: MessageId,
     pub role: Role,
@@ -215,6 +217,29 @@ impl Conversation {
             MessageStatus::Streaming,
             Some(description.into()),
         )
+    }
+
+    /// Appends messages that keep their ids (a restored version); ids must be greater
+    /// than those of the messages already there.
+    pub fn append(&mut self, messages: Vec<Message>) {
+        if let Some(last) = messages.last() {
+            self.next_id = self.next_id.max(last.id.0 + 1);
+        }
+        self.messages.extend(messages);
+    }
+
+    /// The messages after `after` (all of them for `None`).
+    pub fn after(&self, after: Option<MessageId>) -> &[Message] {
+        let first = match after {
+            Some(id) => self.messages.partition_point(|m| m.id <= id),
+            None => 0,
+        };
+        &self.messages[first..]
+    }
+
+    /// Id of the message just before `id`.
+    pub fn before(&self, id: MessageId) -> Option<MessageId> {
+        self.messages.iter().rev().find(|m| m.id < id).map(|m| m.id)
     }
 
     /// Removes the message `from` and every message after it.

@@ -57,10 +57,22 @@ pub struct StoredConversation {
     pub messages: Vec<Message>,
     /// Id of the first message still in the model's context.
     pub context_start: u64,
+    /// Versions not shown (see [`Tail`]).
+    pub tails: Vec<Tail>,
     /// Document collection searched for each reply (`/rag`).
     pub rag_collection: Option<String>,
     /// Named system prompt (`/persona`).
     pub persona: Option<String>,
+}
+
+/// A version of the end of a conversation that is not shown: what followed message
+/// `after` (the start for `None`) before an `/edit` or `/retry` replaced it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Tail {
+    pub after: Option<MessageId>,
+    /// Version number at that point (1 is the first).
+    pub number: usize,
+    pub messages: Vec<Message>,
 }
 
 /// Work for the storage worker. Requests are short-lived (sent once over a channel), so
@@ -99,6 +111,14 @@ pub enum StoreRequest {
     Search(String),
     /// Delete a conversation's messages from `from` (a message id) on.
     Truncate { id: ConversationId, from: u64 },
+    /// Keep a version that is no longer shown.
+    ArchiveTail { id: ConversationId, tail: Tail },
+    /// Forget a kept version (it is shown again).
+    DeleteTail {
+        id: ConversationId,
+        after: Option<MessageId>,
+        number: usize,
+    },
     /// Change a conversation's title.
     Rename { id: ConversationId, title: String },
     /// Delete a conversation and its messages.
@@ -243,6 +263,10 @@ impl Store {
             }),
             StoreRequest::Rename { id, title } => self.rename(&id, &title).map(|()| None),
             StoreRequest::Truncate { id, from } => self.truncate(&id, from).map(|()| None),
+            StoreRequest::ArchiveTail { id, tail } => self.archive_tail(&id, &tail).map(|()| None),
+            StoreRequest::DeleteTail { id, after, number } => {
+                self.delete_tail(&id, after, number).map(|()| None)
+            }
             StoreRequest::DeleteConversation(id) => self
                 .delete(&id)
                 .map(|()| Some(StoreEvent::ConversationDeleted(id))),
@@ -409,6 +433,68 @@ impl Store {
         Ok(())
     }
 
+    /// Keeps a version that is no longer shown.
+    pub fn archive_tail(&mut self, id: &ConversationId, tail: &Tail) -> Result<(), StoreError> {
+        let messages = serde_json::to_string(&tail.messages)
+            .map_err(|e| StoreError::Corrupt(format!("version : {e}")))?;
+        self.conn.execute(
+            "INSERT INTO message_tails (conversation_id, after_seq, number, messages, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                id.0,
+                tail.after.map(|a| i64::try_from(a.0).unwrap_or(i64::MAX)),
+                i64::try_from(tail.number).unwrap_or(i64::MAX),
+                messages,
+                now()
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Forgets a kept version.
+    pub fn delete_tail(
+        &mut self,
+        id: &ConversationId,
+        after: Option<MessageId>,
+        number: usize,
+    ) -> Result<(), StoreError> {
+        self.conn.execute(
+            "DELETE FROM message_tails WHERE conversation_id = ?1 AND after_seq IS ?2
+             AND number = ?3",
+            params![
+                id.0,
+                after.map(|a| i64::try_from(a.0).unwrap_or(i64::MAX)),
+                i64::try_from(number).unwrap_or(i64::MAX)
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn tails(&self, id: &ConversationId) -> Result<Vec<Tail>, StoreError> {
+        let mut statement = self.conn.prepare(
+            "SELECT after_seq, number, messages FROM message_tails
+             WHERE conversation_id = ?1 ORDER BY id",
+        )?;
+        let rows = statement.query_map([&id.0], |r| {
+            Ok((
+                r.get::<_, Option<i64>>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })?;
+        let mut tails = Vec::new();
+        for row in rows {
+            let (after, number, messages) = row?;
+            tails.push(Tail {
+                after: after.and_then(|a| u64::try_from(a).ok()).map(MessageId),
+                number: usize::try_from(number).unwrap_or(0),
+                messages: serde_json::from_str(&messages)
+                    .map_err(|_| corrupt("version", &number))?,
+            });
+        }
+        Ok(tails)
+    }
+
     /// Changes a conversation's title (no-op if it does not exist).
     pub fn rename(&mut self, id: &ConversationId, title: &str) -> Result<(), StoreError> {
         self.conn.execute(
@@ -526,6 +612,7 @@ impl Store {
             summary,
             messages,
             context_start: u64::try_from(context_start).unwrap_or(0),
+            tails: self.tails(id)?,
             rag_collection,
             persona,
         })
@@ -980,6 +1067,42 @@ mod tests {
             store.search("iVBORw").expect("search").is_empty(),
             "not indexed"
         );
+    }
+
+    #[test]
+    fn kept_versions_round_trip_and_go_with_the_conversation() {
+        let mut store = store();
+        let conv = record("c1", "t");
+        store
+            .save_message(&conv, &message(0, Role::User, "Q", MessageStatus::Complete))
+            .expect("save");
+        let first = Tail {
+            after: Some(MessageId(0)),
+            number: 1,
+            messages: vec![message(1, Role::Assistant, "v1", MessageStatus::Complete)],
+        };
+        let root = Tail {
+            after: None,
+            number: 2,
+            messages: vec![message(0, Role::User, "Qx", MessageStatus::Complete)],
+        };
+        store.archive_tail(&conv.id, &first).expect("archive");
+        store.archive_tail(&conv.id, &root).expect("archive");
+        assert_eq!(
+            store.load(&conv.id).expect("load").tails,
+            vec![first.clone(), root.clone()]
+        );
+        store.delete_tail(&conv.id, None, 2).expect("delete");
+        store
+            .delete_tail(&conv.id, Some(MessageId(0)), 9)
+            .expect("no-op");
+        assert_eq!(store.load(&conv.id).expect("load").tails, vec![first]);
+        store.delete(&conv.id).expect("delete");
+        let left: i64 = store
+            .conn
+            .query_row("SELECT COUNT(*) FROM message_tails", [], |r| r.get(0))
+            .expect("count");
+        assert_eq!(left, 0);
     }
 
     #[test]

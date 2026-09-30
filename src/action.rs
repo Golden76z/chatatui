@@ -83,6 +83,10 @@ pub enum Action {
     Exported(Result<String, String>),
     /// Answer to a tool call: `always` allows the next ones of this conversation too.
     ToolAnswer { allow: bool, always: bool },
+    /// Alt+←: show the previous version after the last branch point.
+    PreviousVersion,
+    /// Alt+→: the next version.
+    NextVersion,
     /// Ctrl+↑: put the previous message sent in the input.
     HistoryPrevious,
     /// Ctrl+↓: the next one (back to the draft after the last).

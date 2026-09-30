@@ -42,7 +42,9 @@ use crate::{
         Citation, Conversation, MessageId, MessageStatus, ModelPicker, Overlay, Palette, Role,
         ScrollState, Sidebar, Status,
     },
-    storage::{ConversationId, ConversationRecord, StoreEvent, StoreRequest, StoredConversation},
+    storage::{
+        ConversationId, ConversationRecord, StoreEvent, StoreRequest, StoredConversation, Tail,
+    },
     tokens,
     transcript::Transcript,
 };
@@ -352,6 +354,8 @@ pub struct App {
     queued: Option<String>,
     /// User message being edited (`/edit`): sending replaces it and what followed.
     pub editing: Option<MessageId>,
+    /// Versions replaced by `/edit` and `/retry`, not shown.
+    pub tails: Vec<Tail>,
     /// Offer tools to the model (`/tools`).
     pub tools_enabled: bool,
     /// Messages sent before (all conversations), oldest first, for `Ctrl+↑`.
@@ -438,6 +442,7 @@ impl App {
             auto_compact: config.auto_compact,
             queued: None,
             editing: None,
+            tails: Vec::new(),
             tools_enabled: config.tools.enabled,
             input_history: Vec::new(),
             history_cursor: None,
@@ -679,6 +684,8 @@ impl App {
     }
 
     fn refresh_view(&mut self) {
+        let marks = self.version_marks();
+        self.transcript.set_marks(marks);
         let width = usize::from(self.chat_area().width);
         self.transcript.refresh(
             self.conversation.messages(),
@@ -1015,6 +1022,8 @@ impl App {
                 effects.push(Effect::Store(StoreRequest::InputHistory));
                 effects
             }
+            Action::PreviousVersion => self.switch_version(false),
+            Action::NextVersion => self.switch_version(true),
             Action::HistoryPrevious => {
                 let position = match &self.history_cursor {
                     Some((0, _)) => return Vec::new(),
@@ -1290,17 +1299,147 @@ impl App {
         effects
     }
 
-    /// Removes message `id` and the following ones, here and in the database.
+    /// Shown version and number of versions of what follows `after`, when it has several.
+    pub fn versions_at(&self, after: Option<MessageId>) -> Option<(usize, usize)> {
+        let kept: Vec<usize> = self
+            .tails
+            .iter()
+            .filter(|t| t.after == after)
+            .map(|t| t.number)
+            .collect();
+        if kept.is_empty() {
+            return None;
+        }
+        let total = kept.len() + 1;
+        let shown = (1..=total).find(|n| !kept.contains(n)).unwrap_or(total);
+        Some((shown, total))
+    }
+
+    /// Branch points of the conversation shown, in order.
+    fn branch_points(&self) -> Vec<Option<MessageId>> {
+        let mut points: Vec<Option<MessageId>> = Vec::new();
+        for tail in &self.tails {
+            let present = match tail.after {
+                None => true,
+                Some(id) => self.conversation.messages().iter().any(|m| m.id == id),
+            };
+            if present && !points.contains(&tail.after) {
+                points.push(tail.after);
+            }
+        }
+        points.sort();
+        points
+    }
+
+    /// `‹ n/total ›` markers: on the first message after each branch point.
+    fn version_marks(&self) -> Vec<(MessageId, usize, usize)> {
+        self.branch_points()
+            .into_iter()
+            .filter_map(|after| {
+                let first = self.conversation.after(after).first()?.id;
+                let (shown, total) = self.versions_at(after)?;
+                Some((first, shown, total))
+            })
+            .collect()
+    }
+
+    /// Alt+← / Alt+→: shows the previous / next version after the last branch point.
+    fn switch_version(&mut self, forward: bool) -> Vec<Effect> {
+        if self.is_generating() {
+            self.status = Status::Error("attendez la fin de la réponse (ou Échap)".into());
+            return Vec::new();
+        }
+        let Some(after) = self.branch_points().pop() else {
+            self.status = Status::Info("une seule version (/edit ou /retry en créent)".into());
+            return Vec::new();
+        };
+        let Some((shown, total)) = self.versions_at(after) else {
+            return Vec::new();
+        };
+        let target = if forward {
+            shown + 1
+        } else {
+            shown.wrapping_sub(1)
+        };
+        if target == 0 || target > total {
+            return Vec::new();
+        }
+        let Some(index) = self
+            .tails
+            .iter()
+            .position(|t| t.after == after && t.number == target)
+        else {
+            return Vec::new();
+        };
+        let restored = self.tails.remove(index);
+        let current = self.conversation.after(after).to_vec();
+        let mut effects = Vec::new();
+        let first = current.first().map(|m| m.id);
+        let archived = Tail {
+            after,
+            number: shown,
+            messages: current,
+        };
+        if let Some(id) = &self.conversation_id {
+            effects.push(Effect::Store(StoreRequest::ArchiveTail {
+                id: id.clone(),
+                tail: archived.clone(),
+            }));
+            effects.push(Effect::Store(StoreRequest::DeleteTail {
+                id: id.clone(),
+                after,
+                number: target,
+            }));
+            if let Some(first) = first {
+                effects.push(Effect::Store(StoreRequest::Truncate {
+                    id: id.clone(),
+                    from: first.0,
+                }));
+            }
+        }
+        self.tails.push(archived);
+        if let Some(first) = first {
+            self.conversation.truncate(first);
+        }
+        let ids: Vec<MessageId> = restored.messages.iter().map(|m| m.id).collect();
+        self.conversation.append(restored.messages);
+        effects.extend(ids.into_iter().filter_map(|id| self.save(id)));
+        self.measured = None;
+        self.retrieved = None;
+        self.status = Status::Info(format!("version {target}/{total}"));
+        effects
+    }
+
+    /// Removes message `id` and the following ones, here and in the database; they are
+    /// kept as a version to switch back to (Alt+←).
     fn truncate_from(&mut self, id: MessageId) -> Vec<Effect> {
+        let after = self.conversation.before(id);
+        let replaced = self.conversation.after(after).to_vec();
+        let mut effects = Vec::new();
+        if !replaced.is_empty() {
+            let number = self.versions_at(after).map_or(1, |(shown, _)| shown);
+            let tail = Tail {
+                after,
+                number,
+                messages: replaced,
+            };
+            if let Some(conversation) = &self.conversation_id {
+                effects.push(Effect::Store(StoreRequest::ArchiveTail {
+                    id: conversation.clone(),
+                    tail: tail.clone(),
+                }));
+            }
+            self.tails.push(tail);
+        }
         self.conversation.truncate(id);
         self.measured = None;
-        match &self.conversation_id {
-            Some(conversation) => vec![Effect::Store(StoreRequest::Truncate {
+        if let Some(conversation) = &self.conversation_id {
+            effects.push(Effect::Store(StoreRequest::Truncate {
                 id: conversation.clone(),
                 from: id.0,
-            })],
-            None => Vec::new(),
+            }));
         }
+        effects
     }
 
     /// `/edit`: puts the last user message back in the input; sending it replaces it.
@@ -2538,6 +2677,7 @@ impl App {
             Some(summary.id),
             Some(summary.title),
         );
+        self.tails = stored.tails;
         if let Some(name) = missing_persona {
             self.status = Status::Error(format!(
                 "persona « {name} » absente de la config : prompt système par défaut"
@@ -2558,6 +2698,7 @@ impl App {
         self.measured = None;
         self.conversation_cost = None;
         self.editing = None;
+        self.tails = Vec::new();
         self.tools_always = false;
         // The collection carries over to a new conversation (`load` sets its own).
         self.retrieved = None;
@@ -3127,6 +3268,7 @@ mod tests {
             context_start: 0,
             rag_collection: None,
             persona: None,
+            tails: Vec::new(),
         })));
 
         assert!(
@@ -3923,6 +4065,7 @@ mod tests {
             context_start: 0,
             rag_collection: Some("rust".into()),
             persona: None,
+            tails: Vec::new(),
         })));
         assert_eq!(app.rag_collection.as_deref(), Some("rust"));
         app.update(Action::NewConversation);
@@ -4485,6 +4628,114 @@ mod tests {
     }
 
     #[test]
+    fn retried_replies_are_kept_as_versions() {
+        let mut app = app();
+        let job = send(&mut app, "Question");
+        token(&mut app, job.request_id, "Première réponse");
+        llm(&mut app, job.request_id, LlmEvent::Done);
+        let id = app.conversation_id.clone().expect("stored");
+        assert!(
+            app.update(Action::PreviousVersion).is_empty(),
+            "one version"
+        );
+        assert_eq!(app.version_marks(), Vec::new());
+
+        let effects = app.run_command(CommandId::Retry, "");
+        assert!(effects.iter().any(|e| matches!(
+            e,
+            Effect::Store(StoreRequest::ArchiveTail { tail, .. })
+                if tail.number == 1 && tail.messages[0].content == "Première réponse"
+        )));
+        let job = effects
+            .iter()
+            .find_map(|e| match e {
+                Effect::StartCompletion(job) => Some(job.clone()),
+                _ => None,
+            })
+            .expect("regenerated");
+        token(&mut app, job.request_id, "Deuxième réponse");
+        llm(&mut app, job.request_id, LlmEvent::Done);
+        let reply = |app: &App| app.conversation.messages()[1].content.clone();
+        let question = app.conversation.messages()[0].id;
+        assert_eq!(app.versions_at(Some(question)), Some((2, 2)));
+        let second = app.conversation.messages()[1].id;
+        assert_eq!(app.version_marks(), vec![(second, 2, 2)]);
+        assert!(
+            app.update(Action::NextVersion).is_empty(),
+            "already the last"
+        );
+
+        let effects = app.update(Action::PreviousVersion);
+        assert_eq!(reply(&app), "Première réponse");
+        assert_eq!(app.conversation.messages().len(), 2);
+        assert_eq!(app.versions_at(Some(question)), Some((1, 2)));
+        assert!(effects.contains(&Effect::Store(StoreRequest::DeleteTail {
+            id: id.clone(),
+            after: Some(question),
+            number: 1,
+        })));
+        assert!(effects.contains(&Effect::Store(StoreRequest::Truncate {
+            id: id.clone(),
+            from: second.0,
+        })));
+        assert!(effects.iter().any(|e| matches!(
+            e,
+            Effect::Store(StoreRequest::ArchiveTail { tail, .. })
+                if tail.number == 2 && tail.messages[0].content == "Deuxième réponse"
+        )));
+        assert!(
+            effects
+                .iter()
+                .any(|e| matches!(e, Effect::Store(StoreRequest::SaveMessage { .. })))
+        );
+        // The next request sends the version shown.
+        let history: Vec<String> = app.prompt().iter().map(|m| m.content.clone()).collect();
+        assert!(history.iter().any(|c| c == "Première réponse"));
+        assert!(!history.iter().any(|c| c == "Deuxième réponse"));
+
+        app.update(Action::NextVersion);
+        assert_eq!(reply(&app), "Deuxième réponse");
+
+        // A third try is numbered 3; the first two stay reachable.
+        let effects = app.run_command(CommandId::Retry, "");
+        let job = effects
+            .iter()
+            .find_map(|e| match e {
+                Effect::StartCompletion(job) => Some(job.clone()),
+                _ => None,
+            })
+            .expect("regenerated");
+        token(&mut app, job.request_id, "Troisième réponse");
+        llm(&mut app, job.request_id, LlmEvent::Done);
+        assert_eq!(app.versions_at(Some(question)), Some((3, 3)));
+        app.update(Action::PreviousVersion);
+        app.update(Action::PreviousVersion);
+        assert_eq!(reply(&app), "Première réponse");
+        assert_eq!(app.versions_at(Some(question)), Some((1, 3)));
+    }
+
+    #[test]
+    fn edited_questions_are_kept_as_versions() {
+        let mut app = app();
+        let job = send(&mut app, "Premire question");
+        token(&mut app, job.request_id, "Réponse");
+        llm(&mut app, job.request_id, LlmEvent::Done);
+        app.run_command(CommandId::Edit, "");
+        app.set_input("Première question");
+        app.update(Action::Submit);
+        assert_eq!(app.versions_at(None), Some((2, 2)));
+        app.update(Action::Cancel);
+        app.update(Action::PreviousVersion);
+        let contents: Vec<&str> = app
+            .conversation
+            .messages()
+            .iter()
+            .map(|m| m.content.as_str())
+            .collect();
+        assert_eq!(contents, vec!["Premire question", "Réponse"]);
+    }
+
+    #[test]
     fn export_builds_markdown_named_after_the_title() {
         let mut app = app();
         assert!(app.run_command(CommandId::Export, "").is_empty());
@@ -4549,6 +4800,7 @@ mod tests {
             context_start: 0,
             rag_collection: None,
             persona: Some("prof".into()),
+            tails: Vec::new(),
         })));
         assert!(matches!(&other.status, Status::Error(m) if m.contains("absente de la config")));
         assert_eq!(

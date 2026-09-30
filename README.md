@@ -212,8 +212,8 @@ run), or press `Ctrl+P` for the palette:
 | `/rename <title>` | Rename the conversation |
 | `/persona [name\|off]` | Use a named system prompt from `[prompts]` in this conversation, or go back to `system_prompt` |
 | `/tools [on\|off]` | Let the model read files, list folders and search your documents (each call confirmed) |
-| `/edit` | Put your last message back in the input: sending it replaces it and what followed (`Esc` cancels) |
-| `/retry [model]` | Replace the last reply with a new one, from another model if given (`/retry claude`) |
+| `/edit` | Put your last message back in the input: sending it replaces it and what followed (`Esc` cancels); the old version is kept (`Alt+←`) |
+| `/retry [model]` | Replace the last reply with a new one, from another model if given (`/retry claude`); the old reply is kept (`Alt+←`) |
 | `/export [file.md]` | Save the conversation as Markdown (named after its title by default; never overwrites) |
 | `/copy [code [n]]` | Copy the last reply (`Ctrl+Y`), or its code block `n` (default: the last; blocks are numbered when there are several) |
 | `/delete` | Delete the conversation (run twice to confirm) |
@@ -245,6 +245,7 @@ Start a message with `//` to send text that begins with a slash.
 | `Ctrl+P` | Command palette |
 | `Ctrl+Y` | Copy the last reply |
 | `Ctrl+↑` / `Ctrl+↓` | Previous / next message sent (all conversations); back to what you were typing after the last |
+| `Alt+←` / `Alt+→` (empty input) | Previous / next version of the last replaced exchange (`‹ 2/3 ›` in the header, after `/edit` or `/retry`) |
 | `F1` | Help |
 | `PgUp` / `PgDn`, mouse wheel | Scroll the conversation |
 | `Up` / `Down` (empty input) | Scroll by one line |

@@ -124,6 +124,18 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE messages ADD COLUMN image_type TEXT;
     ALTER TABLE messages ADD COLUMN image_data TEXT;
     "#,
+    // v10: versions replaced by /edit and /retry, kept to switch back to them.
+    r#"
+    CREATE TABLE message_tails (
+        id              INTEGER PRIMARY KEY,
+        conversation_id TEXT NOT NULL REFERENCES conversations (id) ON DELETE CASCADE,
+        after_seq       INTEGER,
+        number          INTEGER NOT NULL,
+        messages        TEXT NOT NULL,
+        created_at      INTEGER NOT NULL
+    );
+    CREATE INDEX message_tails_by_conversation ON message_tails (conversation_id);
+    "#,
 ];
 
 /// Latest schema version.

@@ -37,9 +37,28 @@ pub struct Transcript {
     revision: u64,
     /// Messages rendered during the last refresh (for tests and diagnostics).
     last_rendered: usize,
+    /// Version markers (`‹ 2/3 ›`): message, shown version, number of versions.
+    marks: Vec<(MessageId, usize, usize)>,
 }
 
 impl Transcript {
+    /// Sets the version markers; messages whose marker changed are rendered again.
+    pub fn set_marks(&mut self, marks: Vec<(MessageId, usize, usize)>) {
+        if marks == self.marks {
+            return;
+        }
+        let changed: Vec<MessageId> = marks
+            .iter()
+            .filter(|m| !self.marks.contains(m))
+            .chain(self.marks.iter().filter(|m| !marks.contains(m)))
+            .map(|m| m.0)
+            .collect();
+        for id in changed {
+            self.invalidate(id);
+        }
+        self.marks = marks;
+    }
+
     /// Marks a message as changed; it is re-rendered on the next refresh.
     pub fn invalidate(&mut self, id: MessageId) {
         if let Some(entry) = self.entries.iter_mut().rev().find(|e| e.id == id) {
@@ -98,7 +117,12 @@ impl Transcript {
                 if first_in_context == Some(i) {
                     lines.extend(boundary(message.role == Role::Summary, width));
                 }
-                let body = message_lines(message, width);
+                let mark = self
+                    .marks
+                    .iter()
+                    .find(|m| m.0 == message.id)
+                    .map(|m| (m.1, m.2));
+                let body = message_lines_marked(message, width, mark);
                 if in_context {
                     lines.extend(body);
                 } else {
@@ -159,7 +183,23 @@ impl Transcript {
 
 /// Renders one message: header, body, status marker and a separating blank line.
 pub fn message_lines(message: &Message, width: usize) -> Vec<Line<'static>> {
-    let mut lines = vec![header(message.role)];
+    message_lines_marked(message, width, None)
+}
+
+/// [`message_lines`], with `‹ shown/total ›` in the header when there are versions.
+pub fn message_lines_marked(
+    message: &Message,
+    width: usize,
+    mark: Option<(usize, usize)>,
+) -> Vec<Line<'static>> {
+    let mut header = header(message.role);
+    if let Some((shown, total)) = mark {
+        header.push_span(Span::styled(
+            format!("  ‹ {shown}/{total} ›  Alt+← Alt+→"),
+            Style::default().fg(crate::theme::palette().dim),
+        ));
+    }
+    let mut lines = vec![header];
     let mut body = match message.role {
         Role::Assistant | Role::Summary => markdown::render(&message.content, width),
         Role::User | Role::System => plain(&message.content, width),
@@ -364,6 +404,24 @@ mod tests {
 
         assert!(!t.refresh(c.messages(), 40, 0), "nothing changed");
         assert_eq!(t.last_rendered(), 0);
+    }
+
+    #[test]
+    fn version_marks_are_shown_in_the_header() {
+        let c = conversation();
+        let mut t = Transcript::default();
+        t.refresh(c.messages(), 60, 0);
+        let reply = c.messages()[1].id;
+        t.set_marks(vec![(reply, 2, 3)]);
+        assert!(t.refresh(c.messages(), 60, 0));
+        assert_eq!(t.last_rendered(), 1, "only the marked message");
+        assert_eq!(
+            text(&t.visible(3, 1)),
+            vec!["▌ Assistant  ‹ 2/3 ›  Alt+← Alt+→"]
+        );
+        t.set_marks(Vec::new());
+        t.refresh(c.messages(), 60, 0);
+        assert_eq!(text(&t.visible(3, 1)), vec!["▌ Assistant"]);
     }
 
     #[test]

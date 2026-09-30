@@ -130,6 +130,7 @@ tests/      app_flow.rs http_clients.rs fixtures/*.sse
 | J22 ✅ | GitHub: CI (fmt, clippy, tests on Linux; macOS build), release binaries on `v*` tags (Linux x86_64/arm64, macOS arm64), install docs |
 | J23 ✅ | Input history (Ctrl+↑/↓, all conversations), generation speed (t/s live, last reply in `/context`), cost of cloud conversations (`price_input` / `price_output`) |
 | J24 ✅ | Web pages: `fetch_url` tool and `/add https://…` (light HTML→text converter, PDFs via the indexing extractor, 5 MB / 60k characters limits) |
+| J25 ✅ | Versions: `/edit` and `/retry` keep the replaced messages (schema v10 `message_tails`), `‹ n/total ›` marker, Alt+←/→ to switch; the version shown is what gets sent |
 
 Continuous integration (`.github/workflows/ci.yml`) runs the same checks on every push;
 pushing a `v*` tag builds release binaries (`release.yml`).

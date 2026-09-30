@@ -14,10 +14,10 @@
 - **J23**: input history (`Ctrl+↑` / `Ctrl+↓`), generation speed, cost of cloud
   conversations.
 - **J24**: web pages — `fetch_url` tool and `/add https://…`.
+- **J25**: versions — `/edit` and `/retry` keep what they replace, `Alt+←` / `Alt+→`
+  switch between versions.
 
 ## Next
 
 - Windows support (clipboard through `clip.exe`, paths, CI job).
-- Conversation branches: keep the replaced messages of `/edit` and `/retry` and switch
-  between versions.
 - Re-ranking with a local cross-encoder when the server has no `/v1/rerank`.
