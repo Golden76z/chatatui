@@ -168,6 +168,16 @@ impl Transcript {
         self.last_rendered
     }
 
+    /// Text of every display line, in order.
+    pub fn line_texts(&self) -> Vec<String> {
+        self.entries
+            .iter()
+            .flat_map(|e| e.lines.iter())
+            .chain(self.trailer.iter())
+            .map(ToString::to_string)
+            .collect()
+    }
+
     /// First display line of message `id`, once rendered.
     pub fn line_of(&self, id: MessageId) -> Option<usize> {
         let mut line = 0;

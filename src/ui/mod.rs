@@ -9,6 +9,7 @@ use crate::{app::App, layout, state::Overlay};
 mod chat;
 mod collections_view;
 mod context_view;
+mod find_bar;
 mod help;
 mod model_picker;
 mod palette;
@@ -23,12 +24,15 @@ pub use text_popup::max_scroll as popup_max_scroll;
 
 /// Draws the whole screen.
 pub fn render(app: &App, frame: &mut Frame) {
-    let layout = layout::compute(frame.area(), app.input.lines().len(), app.sidebar.is_some());
+    let layout = layout::compute(frame.area(), app.input_rows(), app.sidebar.is_some());
     if let (Some(sidebar), Some(area)) = (&app.sidebar, layout.sidebar) {
         sidebar::render(app, sidebar, frame, area);
     }
     chat::render(app, frame, layout.chat);
-    frame.render_widget(&app.input, layout.input);
+    match &app.find {
+        Some(find) => find_bar::render(find, frame, layout.input),
+        None => frame.render_widget(&app.input, layout.input),
+    }
     status_bar::render(app, frame, layout.status);
     let suggestions = app.suggestions();
     if !suggestions.is_empty() {
@@ -270,6 +274,46 @@ mod tests {
             },
         )));
         insta::assert_snapshot!(draw(&mut app, 100, 14).backend());
+    }
+
+    #[test]
+    fn find_bar_highlights_matches() {
+        let mut app = App::new(&Config::default(), false);
+        app.update(Action::Resize {
+            width: 70,
+            height: 10,
+        });
+        let id = stream(
+            &mut app,
+            "Comment trier un Vec ?",
+            &["Pour trier : `v.sort()`. Tri stable."],
+        );
+        app.update(Action::Llm {
+            request_id: id,
+            event: LlmEvent::Done,
+        });
+        app.update(Action::OpenFind);
+        for c in "tri".chars() {
+            app.update(Action::FindType(c));
+        }
+        app.update(Action::FindNext);
+        let backend = draw(&mut app, 70, 10);
+        insta::assert_snapshot!(backend.backend());
+        // The current match (the second one) is drawn with the badge colours.
+        let buffer = backend.backend().buffer();
+        let cell = |x: u16, y: u16| buffer[(x, y)].clone();
+        let row = (0..10)
+            .find(|&y| {
+                (0..70)
+                    .map(|x| cell(x, y).symbol().to_owned())
+                    .collect::<String>()
+                    .contains("Pour trier")
+            })
+            .expect("reply line");
+        let x = (0..70u16)
+            .find(|&x| cell(x, row).symbol() == "t" && cell(x + 1, row).symbol() == "r")
+            .expect("match");
+        assert_eq!(cell(x, row).bg, crate::theme::palette().badge_bg);
     }
 
     #[test]

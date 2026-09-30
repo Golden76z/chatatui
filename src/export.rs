@@ -93,10 +93,12 @@ pub fn file_name(title: &str) -> String {
 
 /// `text` in lower case without accents, for matching the way the search does.
 pub fn folded(text: &str) -> String {
-    text.chars()
-        .flat_map(fold_accent)
-        .flat_map(char::to_lowercase)
-        .collect()
+    text.chars().flat_map(fold_char).collect()
+}
+
+/// One character in lower case without accent (`É` → `e`, `Œ` → `oe`).
+pub fn fold_char(c: char) -> impl Iterator<Item = char> {
+    fold_accent(c).into_iter().flat_map(char::to_lowercase)
 }
 
 /// `é` → `e`, `œ` → `oe`, … (common French and Western letters).

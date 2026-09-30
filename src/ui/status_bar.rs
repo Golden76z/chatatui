@@ -213,6 +213,13 @@ fn hint_candidates(app: &App) -> Vec<String> {
         }
         None => {}
     }
+    if app.find.is_some() {
+        return vec![
+            "Entrée suivant · Maj+Entrée précédent · Échap fermer ".into(),
+            "Entrée ↓ · Maj+Entrée ↑ · Échap fermer ".into(),
+            "↑↓ · Échap ".into(),
+        ];
+    }
     if let Some(sidebar) = &app.sidebar {
         if sidebar.rename.is_some() {
             return vec![

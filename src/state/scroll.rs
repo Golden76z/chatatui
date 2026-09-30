@@ -58,6 +58,22 @@ impl ScrollState {
         }
     }
 
+    /// Scrolls just enough to show `line`, with some context above it.
+    pub fn reveal(&mut self, line: usize, total: usize, height: usize) {
+        let offset = self.offset(total, height);
+        if line >= offset && line < offset + height {
+            return;
+        }
+        let max = total.saturating_sub(height);
+        let target = line.saturating_sub(height / 3).min(max);
+        if target >= max {
+            self.to_bottom();
+        } else {
+            self.offset = target;
+            self.follow = false;
+        }
+    }
+
     /// Jumps to the first line.
     pub fn to_top(&mut self, total: usize, height: usize) {
         if total > height {

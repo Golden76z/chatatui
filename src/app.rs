@@ -39,8 +39,8 @@ use crate::{
         store::CollectionSummary,
     },
     state::{
-        Citation, Conversation, MessageId, MessageStatus, ModelPicker, Overlay, Palette, Role,
-        ScrollState, Sidebar, Status,
+        Citation, Conversation, Find, MessageId, MessageStatus, ModelPicker, Overlay, Palette,
+        Role, ScrollState, Sidebar, Status,
     },
     storage::{
         ConversationId, ConversationRecord, StoreEvent, StoreRequest, StoredConversation, Tail,
@@ -313,6 +313,8 @@ pub struct App {
     pub sidebar: Option<Sidebar>,
     /// The conversation highlighted in the list, shown instead of the current one.
     pub preview: Option<Preview>,
+    /// The find bar (Ctrl+F), when open.
+    pub find: Option<Find>,
     /// Conversation whose preview was requested and has not arrived yet.
     preview_requested: Option<ConversationId>,
     /// The open popup (model picker, palette, help), if any.
@@ -424,6 +426,7 @@ impl App {
             sidebar: None,
             preview: None,
             preview_requested: None,
+            find: None,
             overlay: None,
             suggestion: 0,
             suggestions_dismissed: false,
@@ -621,6 +624,7 @@ impl App {
             sidebar_open: self.sidebar.is_some(),
             overlay: self.overlay.as_ref().map(Overlay::kind),
             suggestions_open: !self.suggestions().is_empty(),
+            find_open: self.find.is_some(),
         }
     }
 
@@ -650,11 +654,16 @@ impl App {
 
     /// Screen layout for the current terminal size, input and panels.
     pub fn layout(&self) -> layout::AppLayout {
-        layout::compute(
-            self.viewport,
-            self.input.lines().len(),
-            self.sidebar.is_some(),
-        )
+        layout::compute(self.viewport, self.input_rows(), self.sidebar.is_some())
+    }
+
+    /// Rows of the input box: the find bar takes its place, on one row.
+    pub fn input_rows(&self) -> usize {
+        if self.find.is_some() {
+            1
+        } else {
+            self.input.lines().len()
+        }
     }
 
     /// Area where conversation lines are drawn.
@@ -699,6 +708,14 @@ impl App {
             width,
             self.conversation.context_start(),
         );
+        // Streamed text moves the matches: search again, keeping the current one.
+        if let Some(find) = &mut self.find
+            && find.revision != Some(self.transcript.revision())
+        {
+            let lines = self.transcript.line_texts();
+            find.refresh(lines.iter().map(String::as_str));
+            find.revision = Some(self.transcript.revision());
+        }
         if let Some(preview) = &mut self.preview {
             preview.transcript.refresh(
                 preview.conversation.messages(),
@@ -824,7 +841,7 @@ impl App {
             // Esc closes the topmost popup or panel first.
             Action::Cancel => {
                 self.pending_confirm = None;
-                if self.overlay.take().is_some() {
+                if self.overlay.take().is_some() || self.find.take().is_some() {
                     Vec::new()
                 } else if self.editing.take().is_some() {
                     self.set_input("");
@@ -1045,6 +1062,7 @@ impl App {
             }
             Action::NewConversation => self.new_conversation(),
             Action::ToggleSidebar => {
+                self.find = None;
                 if self.sidebar.take().is_some() {
                     Vec::new()
                 } else {
@@ -1135,6 +1153,13 @@ impl App {
                 effects
             }
             Action::PreviousVersion => self.switch_version(false),
+            Action::OpenFind => self.open_find(None),
+            Action::FindType(c) => self.find_edit(|query| query.push(c)),
+            Action::FindBackspace => self.find_edit(|query| {
+                query.pop();
+            }),
+            Action::FindNext => self.find_step(true),
+            Action::FindPrevious => self.find_step(false),
             Action::NextVersion => self.switch_version(true),
             Action::HistoryPrevious => {
                 let position = match &self.history_cursor {
@@ -1221,6 +1246,7 @@ impl App {
         match id {
             CommandId::New => self.new_conversation(),
             CommandId::History => {
+                self.find = None;
                 if self.sidebar.is_some() {
                     Vec::new()
                 } else {
@@ -1276,6 +1302,10 @@ impl App {
             CommandId::Edit => self.start_edit(),
             CommandId::Retry => self.retry(arg.trim()),
             CommandId::Export => self.export(arg.trim()),
+            CommandId::Find => {
+                let arg = arg.trim();
+                self.open_find((!arg.is_empty()).then_some(arg))
+            }
             CommandId::Delete => self.delete_current(),
             CommandId::Collections => {
                 self.overlay = Some(Overlay::Collections { scroll: 0 });
@@ -1520,6 +1550,57 @@ impl App {
         self.retrieved = None;
         self.status = Status::Info(format!("version {target}/{total}"));
         effects
+    }
+
+    /// Ctrl+F / `/find [texte]`: opens the find bar, or goes to the next match when it
+    /// is open.
+    fn open_find(&mut self, query: Option<&str>) -> Vec<Effect> {
+        if self.find.is_some() && query.is_none() {
+            return self.find_step(true);
+        }
+        self.sidebar = None;
+        self.find = Some(Find {
+            query: query.unwrap_or_default().to_owned(),
+            ..Find::default()
+        });
+        self.find_edit(|_| {})
+    }
+
+    /// Changes the query, searches again from the top of the view and shows the match.
+    fn find_edit(&mut self, edit: impl FnOnce(&mut String)) -> Vec<Effect> {
+        let keep = self.scroll_offset();
+        let lines = self.transcript.line_texts();
+        let revision = self.transcript.revision();
+        if let Some(find) = &mut self.find {
+            edit(&mut find.query);
+            find.search(lines.iter().map(String::as_str), keep);
+            find.revision = Some(revision);
+        }
+        self.reveal_match();
+        Vec::new()
+    }
+
+    /// Goes to the next (or previous) match.
+    fn find_step(&mut self, forward: bool) -> Vec<Effect> {
+        if let Some(find) = &mut self.find {
+            if forward {
+                find.next();
+            } else {
+                find.previous();
+            }
+        }
+        self.reveal_match();
+        Vec::new()
+    }
+
+    /// Scrolls to the current match.
+    fn reveal_match(&mut self) {
+        let Some(found) = self.find.as_ref().and_then(Find::current_match) else {
+            return;
+        };
+        let height = usize::from(self.chat_area().height);
+        self.scroll
+            .reveal(found.line, self.transcript.total_lines(), height);
     }
 
     /// Removes message `id` and the following ones, here and in the database; they are
@@ -2827,6 +2908,7 @@ impl App {
         self.transcript.clear();
         self.scroll = ScrollState::default();
         self.sidebar = None;
+        self.find = None;
         self.status = Status::Ready;
     }
 }
@@ -4872,6 +4954,66 @@ mod tests {
         );
         assert_eq!(app.conversation.messages().len(), 2);
         assert!(app.run_command(CommandId::Retry, "").is_empty(), "busy");
+    }
+
+    #[test]
+    fn find_goes_through_the_matches_and_scrolls_to_them() {
+        let mut app = sized_app();
+        let job = send(&mut app, "Parle-moi de la crème");
+        let long: String = (0..60).map(|i| format!("ligne {i}\n\n")).collect();
+        token(
+            &mut app,
+            job.request_id,
+            &format!("La Crème anglaise.\n\n{long}Encore une creme."),
+        );
+        llm(&mut app, job.request_id, LlmEvent::Done);
+        assert!(app.scroll.is_following());
+
+        assert!(app.update(Action::OpenFind).is_empty());
+        assert!(app.key_context().find_open);
+        assert_eq!(app.input_rows(), 1);
+        for c in "creme".chars() {
+            app.update(Action::FindType(c));
+        }
+        let find = app.find.as_ref().expect("open");
+        assert_eq!(
+            find.matches.len(),
+            3,
+            "question, start and end of the reply"
+        );
+        // The view was at the bottom: the first match from there is the last one.
+        assert_eq!(find.current, 2);
+
+        app.update(Action::FindNext);
+        let first = app
+            .find
+            .as_ref()
+            .and_then(Find::current_match)
+            .expect("match");
+        assert_eq!(app.find.as_ref().map(|f| f.current), Some(0));
+        let height = usize::from(app.chat_area().height);
+        let offset = app.scroll_offset();
+        assert!(
+            first.line >= offset && first.line < offset + height,
+            "scrolled to it"
+        );
+        assert!(!app.scroll.is_following());
+
+        app.update(Action::FindPrevious);
+        assert_eq!(app.find.as_ref().map(|f| f.current), Some(2), "wraps");
+        app.update(Action::FindBackspace);
+        app.update(Action::FindType('x'));
+        assert!(app.find.as_ref().is_some_and(|f| f.matches.is_empty()));
+
+        app.update(Action::Cancel);
+        assert!(app.find.is_none(), "Esc closes the bar first");
+        assert_eq!(app.input_rows(), 1, "empty input");
+
+        // `/find texte` opens it on that text.
+        app.run_command(CommandId::Find, "anglaise");
+        assert_eq!(app.find.as_ref().map(|f| f.matches.len()), Some(1));
+        app.update(Action::ToggleSidebar);
+        assert!(app.find.is_none(), "the list has its own search");
     }
 
     #[test]

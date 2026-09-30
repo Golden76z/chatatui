@@ -21,7 +21,9 @@
   Inference, Infinity).
 - **J28**: preview of the highlighted conversation in the list (from the first search
   match), wider list and command suggestions.
+- **J29**: find in the conversation (`Ctrl+F`).
 
 ## Next
 
-- Nothing planned: ideas welcome.
+- MCP servers: external tools next to `read_file` and `fetch_url`, each call confirmed.
+- `/compare <model>`: the same question to a second model, both replies side by side.

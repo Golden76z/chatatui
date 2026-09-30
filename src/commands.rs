@@ -24,6 +24,7 @@ pub enum CommandId {
     Edit,
     Retry,
     Export,
+    Find,
     Help,
     Quit,
 }
@@ -259,6 +260,15 @@ pub const COMMANDS: &[CommandSpec] = &[
         legacy_shortcut: None,
     },
     CommandSpec {
+        id: CommandId::Find,
+        name: "find",
+        aliases: &["chercher"],
+        arg: Arg::Optional("[texte]"),
+        description: "Chercher dans la conversation",
+        shortcut: Some("Ctrl+F"),
+        legacy_shortcut: None,
+    },
+    CommandSpec {
         id: CommandId::Help,
         name: "help",
         aliases: &["aide", "?"],
@@ -474,7 +484,7 @@ mod tests {
     fn palette_search_includes_descriptions() {
         assert_eq!(
             names(&search("conversation")),
-            vec!["new", "history", "rename", "delete", "export"]
+            vec!["new", "history", "rename", "delete", "export", "find"]
         );
         assert_eq!(
             names(&search("contexte")),

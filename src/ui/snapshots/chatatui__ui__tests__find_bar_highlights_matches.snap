@@ -1,0 +1,14 @@
+---
+source: src/ui/mod.rs
+expression: backend.backend()
+---
+" ▌ Vous                                                               "
+" Comment trier un Vec ?                                               "
+"                                                                      "
+" ▌ Assistant                                                          "
+" Pour trier : v.sort(). Tri stable.                                   "
+"                                                                      "
+"╭ Chercher dans la conversation ─────────────────────────────────────╮"
+"│⌕ tri▍   2/3                                                        │"
+"╰────────────────────────────────────────────────────────────────────╯"
+" ● Prêt │ Ollama › llama3.2 │ ctx ≈46                      ↑↓ · Échap "

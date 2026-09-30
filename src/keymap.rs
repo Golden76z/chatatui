@@ -23,6 +23,8 @@ pub struct KeyContext {
     pub suggestions_open: bool,
     /// The input is `/add …`: Tab completes the path.
     pub completing_path: bool,
+    /// The find bar (Ctrl+F) is open and has the focus.
+    pub find_open: bool,
 }
 
 /// Translates a key press into an action. Returns `None` for keys that do nothing.
@@ -88,7 +90,25 @@ pub fn map_key(key: KeyEvent, context: KeyContext) -> Option<Action> {
         KeyCode::Char('n') if ctrl => return Some(Action::NewConversation),
         KeyCode::Char('l') if ctrl => return Some(Action::ToggleSidebar),
         KeyCode::Char('y') if ctrl => return Some(Action::CopyLastReply),
+        KeyCode::Char('f') if ctrl && !context.sidebar_open => return Some(Action::OpenFind),
         _ => {}
+    }
+    if context.find_open {
+        return match key.code {
+            KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                Some(Action::FindPrevious)
+            }
+            KeyCode::Enter | KeyCode::Down => Some(Action::FindNext),
+            KeyCode::Up => Some(Action::FindPrevious),
+            KeyCode::Esc => Some(Action::Cancel),
+            KeyCode::Backspace => Some(Action::FindBackspace),
+            KeyCode::PageUp => Some(Action::PageUp),
+            KeyCode::PageDown => Some(Action::PageDown),
+            KeyCode::Home if ctrl => Some(Action::ScrollToTop),
+            KeyCode::End if ctrl => Some(Action::ScrollToBottom),
+            KeyCode::Char(c) if !ctrl && !alt => Some(Action::FindType(c)),
+            _ => None,
+        };
     }
     if context.sidebar_open {
         return match key.code {
@@ -170,6 +190,49 @@ mod tests {
         assert_eq!(
             map_key(key(KeyCode::Char('l'), KeyModifiers::CONTROL)),
             Some(Action::ToggleSidebar)
+        );
+    }
+
+    #[test]
+    fn find_bar_takes_the_focus() {
+        let context = KeyContext {
+            find_open: true,
+            ..KeyContext::default()
+        };
+        let map = |code, modifiers| super::map_key(key(code, modifiers), context);
+        assert_eq!(
+            map_key(key(KeyCode::Char('f'), KeyModifiers::CONTROL)),
+            Some(Action::OpenFind)
+        );
+        assert_eq!(
+            map(KeyCode::Char('x'), KeyModifiers::NONE),
+            Some(Action::FindType('x'))
+        );
+        assert_eq!(
+            map(KeyCode::Enter, KeyModifiers::NONE),
+            Some(Action::FindNext)
+        );
+        assert_eq!(
+            map(KeyCode::Enter, KeyModifiers::SHIFT),
+            Some(Action::FindPrevious)
+        );
+        assert_eq!(
+            map(KeyCode::Up, KeyModifiers::NONE),
+            Some(Action::FindPrevious)
+        );
+        assert_eq!(map(KeyCode::Esc, KeyModifiers::NONE), Some(Action::Cancel));
+        assert_eq!(
+            map(KeyCode::Char('f'), KeyModifiers::CONTROL),
+            Some(Action::OpenFind)
+        );
+        let in_list = KeyContext {
+            sidebar_open: true,
+            ..KeyContext::default()
+        };
+        assert_ne!(
+            super::map_key(key(KeyCode::Char('f'), KeyModifiers::CONTROL), in_list),
+            Some(Action::OpenFind),
+            "the list has its own search"
         );
     }
 

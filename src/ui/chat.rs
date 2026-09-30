@@ -3,7 +3,7 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Flex, Layout, Rect},
-    style::{Style, Stylize},
+    style::{Modifier, Style, Stylize},
     text::{Line, Span, Text},
     widgets::Paragraph,
 };
@@ -24,7 +24,10 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
     let content = layout::chat_content(area);
     let height = usize::from(content.height);
     let offset = app.scroll_offset();
-    let lines = app.transcript.visible(offset, height);
+    let mut lines = app.transcript.visible(offset, height);
+    if let Some(find) = &app.find {
+        highlight_matches(&mut lines, find, offset);
+    }
     frame.render_widget(Paragraph::new(Text::from(lines)), content);
 
     // Hint shown while scrolled away from the latest content.
@@ -44,6 +47,67 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
             });
         frame.render_widget(hint, hint_area);
     }
+}
+
+/// Highlights the find matches among `lines` (display lines from `offset`), the current
+/// one more strongly.
+fn highlight_matches(lines: &mut [Line<'static>], find: &crate::state::Find, offset: usize) {
+    let palette = crate::theme::palette();
+    let other = Style::default().bg(palette.selection_bg);
+    let current = Style::default()
+        .fg(palette.badge_fg)
+        .bg(palette.badge_bg)
+        .add_modifier(Modifier::BOLD);
+    let end = offset + lines.len();
+    for (index, found) in find.matches.iter().enumerate() {
+        if found.line < offset || found.line >= end {
+            continue;
+        }
+        let style = if index == find.current {
+            current
+        } else {
+            other
+        };
+        let line = &mut lines[found.line - offset];
+        *line = restyle(std::mem::take(line), found.start, found.end, style);
+    }
+}
+
+/// `line` with characters `start..end` patched with `style`.
+fn restyle(line: Line<'static>, start: usize, end: usize, style: Style) -> Line<'static> {
+    let Line {
+        spans,
+        style: line_style,
+        alignment,
+    } = line;
+    let mut out = Vec::with_capacity(spans.len() + 2);
+    let mut position = 0;
+    for span in spans {
+        let count = span.content.chars().count();
+        let (from, to) = (position, position + count);
+        position = to;
+        if to <= start || from >= end {
+            out.push(span);
+            continue;
+        }
+        let text: Vec<char> = span.content.chars().collect();
+        let cut_start = start.saturating_sub(from).min(count);
+        let cut_end = end.saturating_sub(from).min(count);
+        let piece = |a: usize, b: usize| text[a..b].iter().collect::<String>();
+        if cut_start > 0 {
+            out.push(Span::styled(piece(0, cut_start), span.style));
+        }
+        out.push(Span::styled(
+            piece(cut_start, cut_end),
+            span.style.patch(style),
+        ));
+        if cut_end < count {
+            out.push(Span::styled(piece(cut_end, count), span.style));
+        }
+    }
+    let mut line = Line::from(out).style(line_style);
+    line.alignment = alignment;
+    line
 }
 
 /// The conversation highlighted in the list, under a line saying it is only a preview.

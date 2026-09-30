@@ -87,6 +87,16 @@ pub enum Action {
     PreviousVersion,
     /// Alt+→: the next version.
     NextVersion,
+    /// Ctrl+F: open the find bar (next match when it is open).
+    OpenFind,
+    /// A character typed in the find bar.
+    FindType(char),
+    /// Backspace in the find bar.
+    FindBackspace,
+    /// Enter / ↓ in the find bar.
+    FindNext,
+    /// Shift+Enter / ↑ in the find bar.
+    FindPrevious,
     /// Ctrl+↑: put the previous message sent in the input.
     HistoryPrevious,
     /// Ctrl+↓: the next one (back to the draft after the last).
