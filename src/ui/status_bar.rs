@@ -178,6 +178,12 @@ fn hint_candidates(app: &App) -> Vec<String> {
             "Tab compléter · Entrée lancer ".into(),
         ];
     }
+    if app.editing.is_some() {
+        return vec![
+            "✎ modification : Entrée renvoie · Échap annule ".into(),
+            "✎ Entrée · Échap ".into(),
+        ];
+    }
     if app.is_generating() {
         return vec![
             "Échap annuler · Ctrl+C quitter ".into(),

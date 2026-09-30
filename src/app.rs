@@ -315,6 +315,8 @@ pub struct App {
     pub auto_compact: bool,
     /// Message to send once the automatic `/compact` running for it is done.
     queued: Option<String>,
+    /// User message being edited (`/edit`): sending replaces it and what followed.
+    pub editing: Option<MessageId>,
     /// Deletion waiting for its command to be run again (`/forget`, `/delete`).
     pending_confirm: Option<Confirm>,
     /// Token counts of the last completed request of this conversation.
@@ -381,6 +383,7 @@ impl App {
             compact_threshold: config.compact_threshold,
             auto_compact: config.auto_compact,
             queued: None,
+            editing: None,
             request_usage: Usage::default(),
             session_seed: 0,
             next_conversation: 0,
@@ -619,6 +622,10 @@ impl App {
                 self.pending_confirm = None;
                 if self.overlay.take().is_some() {
                     Vec::new()
+                } else if self.editing.take().is_some() {
+                    self.set_input("");
+                    self.status = Status::Info("modification annulée".into());
+                    Vec::new()
                 } else if let Some(sidebar) = &mut self.sidebar {
                     // Esc undoes the panel's current step before closing it.
                     if sidebar.rename.take().is_some() {
@@ -784,6 +791,13 @@ impl App {
             }
             Action::FileRead(result) => self.on_file_read(result),
             Action::CopyLastReply => self.run_command(CommandId::Copy, ""),
+            Action::Exported(result) => {
+                self.status = match result {
+                    Ok(path) => Status::Info(format!("conversation exportée : {path}")),
+                    Err(error) => Status::Error(format!("export impossible : {error}")),
+                };
+                Vec::new()
+            }
             Action::Copied { what, chars, how } => {
                 let chars = tokens::format_count(u64::try_from(chars).unwrap_or(u64::MAX));
                 self.status = Status::Info(match how {
@@ -976,6 +990,9 @@ impl App {
             CommandId::Forget => self.forget(arg.trim()),
             CommandId::Rename => self.rename_current(arg.trim()),
             CommandId::Copy => self.copy(arg.trim()),
+            CommandId::Edit => self.start_edit(),
+            CommandId::Retry => self.retry(arg.trim()),
+            CommandId::Export => self.export(arg.trim()),
             CommandId::Delete => self.delete_current(),
             CommandId::Collections => {
                 self.overlay = Some(Overlay::Collections { scroll: 0 });
@@ -1092,17 +1109,112 @@ impl App {
             ));
             return Vec::new();
         }
+        // Sending an edited message replaces the original and everything after it.
+        let mut effects = Vec::new();
+        if let Some(id) = self.editing.take() {
+            effects.extend(self.truncate_from(id));
+        }
         if self.auto_compact && self.context_nearly_full() && self.compactable() {
             // Summarize first; the message goes out once the summary is in.
             self.queued = Some(text.trim_end().to_owned());
             self.input = new_input();
-            let effect = self.start_job(JobKind::Summary, Role::Summary);
+            effects.push(self.start_job(JobKind::Summary, Role::Summary));
             self.status = Status::Info(
                 "contexte presque plein : résumé de l'historique avant l'envoi…".into(),
             );
-            return vec![effect];
+            return effects;
         }
-        self.send_now(text)
+        effects.extend(self.send_now(text));
+        effects
+    }
+
+    /// Removes message `id` and the following ones, here and in the database.
+    fn truncate_from(&mut self, id: MessageId) -> Vec<Effect> {
+        self.conversation.truncate(id);
+        self.measured = None;
+        match &self.conversation_id {
+            Some(conversation) => vec![Effect::Store(StoreRequest::Truncate {
+                id: conversation.clone(),
+                from: id.0,
+            })],
+            None => Vec::new(),
+        }
+    }
+
+    /// `/edit`: puts the last user message back in the input; sending it replaces it.
+    fn start_edit(&mut self) -> Vec<Effect> {
+        if self.is_generating() {
+            self.status = Status::Error("attendez la fin de la réponse (ou Échap)".into());
+            return Vec::new();
+        }
+        let last = self
+            .conversation
+            .context_messages()
+            .iter()
+            .rev()
+            .find(|m| m.role == Role::User)
+            .map(|m| (m.id, m.content.clone()));
+        let Some((id, content)) = last else {
+            self.status = Status::Error("aucun message à modifier".into());
+            return Vec::new();
+        };
+        self.editing = Some(id);
+        self.set_input(&content);
+        self.status = Status::Info(
+            "modifiez puis Entrée : le message et la suite sont remplacés (Échap annule)".into(),
+        );
+        Vec::new()
+    }
+
+    /// `/retry [model]`: replaces the last reply with a new one, from `model` if given.
+    fn retry(&mut self, model: &str) -> Vec<Effect> {
+        if self.is_generating() {
+            self.status = Status::Error("attendez la fin de la réponse (ou Échap)".into());
+            return Vec::new();
+        }
+        let context = self.conversation.context_messages();
+        let last_reply = match context.last() {
+            Some(m) if m.role == Role::Assistant => Some(m.id),
+            Some(m) if m.role == Role::User => None,
+            _ => {
+                self.status = Status::Error("aucune réponse à régénérer".into());
+                return Vec::new();
+            }
+        };
+        let mut effects = Vec::new();
+        if !model.is_empty() {
+            effects.extend(self.set_model_from_arg(model));
+        }
+        if self.model.is_empty() {
+            self.status = Status::Error("aucun modèle choisi (F2 ou /model)".into());
+            return effects;
+        }
+        if let Some(id) = last_reply {
+            effects.extend(self.truncate_from(id));
+        }
+        effects.push(self.start_job(JobKind::Reply, Role::Assistant));
+        effects
+    }
+
+    /// `/export [file]`: writes the conversation as Markdown.
+    fn export(&mut self, path: &str) -> Vec<Effect> {
+        if self.conversation.is_empty() {
+            self.status = Status::Error("conversation vide : rien à exporter".into());
+            return Vec::new();
+        }
+        let title = self
+            .conversation_title
+            .clone()
+            .unwrap_or_else(|| "Conversation".into());
+        vec![Effect::Export {
+            path: (!path.is_empty()).then(|| path.to_owned()),
+            suggested: crate::export::file_name(&title),
+            content: crate::export::markdown(
+                &title,
+                &self.model_display(),
+                self.conversation.messages(),
+            ),
+        }]
     }
 
     /// Sends `text` as the next user message.
@@ -2080,6 +2192,7 @@ impl App {
     ) {
         self.conversation = conversation;
         self.measured = None;
+        self.editing = None;
         // The collection carries over to a new conversation (`load` sets its own).
         self.retrieved = None;
         self.conversation_id = id;
@@ -3930,5 +4043,97 @@ mod tests {
             error: "embeddings : connexion refusée".into(),
         }));
         assert!(started(&effects).is_empty());
+    }
+
+    #[test]
+    fn edit_replaces_the_last_message_and_what_followed() {
+        let mut app = app();
+        let job = send(&mut app, "Premire question");
+        token(&mut app, job.request_id, "Réponse");
+        llm(&mut app, job.request_id, LlmEvent::Done);
+        let id = app.conversation_id.clone().expect("stored");
+        let original = app.conversation.messages()[0].id;
+
+        assert!(app.run_command(CommandId::Edit, "").is_empty());
+        assert_eq!(app.input_text(), "Premire question");
+        assert_eq!(app.editing, Some(original));
+        // Esc cancels, /edit again, fix the typo and send.
+        app.update(Action::Cancel);
+        assert!(app.input.is_empty() && app.editing.is_none());
+        app.run_command(CommandId::Edit, "");
+        app.set_input("Première question");
+        let effects = app.update(Action::Submit);
+        assert!(effects.contains(&Effect::Store(StoreRequest::Truncate {
+            id,
+            from: original.0
+        })));
+        let job = effects
+            .iter()
+            .find_map(|e| match e {
+                Effect::StartCompletion(job) => Some(job.clone()),
+                _ => None,
+            })
+            .expect("sent");
+        let history: Vec<&str> = job.history.iter().map(|m| m.content.as_str()).collect();
+        assert_eq!(
+            history,
+            vec!["Première question"],
+            "the old exchange is gone"
+        );
+        assert_eq!(app.conversation.messages().len(), 2, "question + new reply");
+    }
+
+    #[test]
+    fn retry_replaces_the_last_reply_optionally_with_another_model() {
+        let mut app = app();
+        assert!(app.run_command(CommandId::Retry, "").is_empty());
+        let job = send(&mut app, "Question");
+        token(&mut app, job.request_id, "Réponse moyenne");
+        llm(&mut app, job.request_id, LlmEvent::Done);
+
+        let effects = app.run_command(CommandId::Retry, "qwen2.5:7b");
+        let job = effects
+            .iter()
+            .find_map(|e| match e {
+                Effect::StartCompletion(job) => Some(job.clone()),
+                _ => None,
+            })
+            .expect("regenerated");
+        assert_eq!(job.model, "qwen2.5:7b");
+        let history: Vec<&str> = job.history.iter().map(|m| m.content.as_str()).collect();
+        assert_eq!(history, vec!["Question"], "the old reply is not sent");
+        assert!(
+            effects
+                .iter()
+                .any(|e| matches!(e, Effect::Store(StoreRequest::Truncate { .. })))
+        );
+        assert_eq!(app.conversation.messages().len(), 2);
+        assert!(app.run_command(CommandId::Retry, "").is_empty(), "busy");
+    }
+
+    #[test]
+    fn export_builds_markdown_named_after_the_title() {
+        let mut app = app();
+        assert!(app.run_command(CommandId::Export, "").is_empty());
+        let job = send(&mut app, "Tri d'un Vec en Rust");
+        token(&mut app, job.request_id, "`v.sort()`");
+        llm(&mut app, job.request_id, LlmEvent::Done);
+        match app.run_command(CommandId::Export, "").as_slice() {
+            [
+                Effect::Export {
+                    path: None,
+                    suggested,
+                    content,
+                },
+            ] => {
+                assert_eq!(suggested, "tri-d-un-vec-en-rust.md");
+                assert!(content.contains("## Assistant\n\n`v.sort()`"));
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(
+            app.run_command(CommandId::Export, "~/notes.md").as_slice(),
+            [Effect::Export { path: Some(p), .. }] if p == "~/notes.md"
+        ));
     }
 }

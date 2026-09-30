@@ -160,6 +160,17 @@ impl Harness {
                 Effect::ReadFile(path) => {
                     return Some(Action::FileRead(chatatui::files::read_attachment(&path)));
                 }
+                Effect::Export {
+                    path,
+                    suggested,
+                    content,
+                } => {
+                    return Some(Action::Exported(chatatui::files::write_new(
+                        path.as_deref(),
+                        &suggested,
+                        &content,
+                    )));
+                }
                 Effect::Copy { what, text } => {
                     return Some(Action::Copied {
                         what,

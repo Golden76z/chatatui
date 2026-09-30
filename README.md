@@ -169,6 +169,9 @@ run), or press `Ctrl+P` for the palette:
 | `/new` | New conversation (`Ctrl+N`) |
 | `/history` | Conversation list (`Ctrl+L`) |
 | `/rename <title>` | Rename the conversation |
+| `/edit` | Put your last message back in the input: sending it replaces it and what followed (`Esc` cancels) |
+| `/retry [model]` | Replace the last reply with a new one, from another model if given (`/retry claude`) |
+| `/export [file.md]` | Save the conversation as Markdown (named after its title by default; never overwrites) |
 | `/copy [code [n]]` | Copy the last reply (`Ctrl+Y`), or its code block `n` (default: the last; blocks are numbered when there are several) |
 | `/delete` | Delete the conversation (run twice to confirm) |
 | `/model [provider] [model]` | Choose the model (`Ctrl+M` / `F2`), or switch directly: `/model qwen2.5:7b`, `/model claude`, `/model claude <model>` |

@@ -49,6 +49,8 @@ pub enum AppEvent {
     CollectionsChecked(Result<Vec<crate::rag::indexer::Staleness>, String>),
     /// A file to attach was read.
     FileRead(Result<Attachment, String>),
+    /// Result of [`crate::action::Effect::Export`].
+    Exported(Result<String, String>),
     /// Result of [`crate::action::Effect::Copy`].
     Copied {
         what: String,

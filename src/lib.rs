@@ -16,6 +16,7 @@ pub mod commands;
 pub mod config;
 pub mod context;
 pub mod event;
+pub mod export;
 pub mod files;
 pub mod keymap;
 pub mod layout;

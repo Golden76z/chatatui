@@ -77,6 +77,8 @@ pub enum Action {
     },
     /// A file requested with `/add` was read (or could not be).
     FileRead(Result<Attachment, String>),
+    /// Result of [`Effect::Export`]: the path written, or a user-facing error.
+    Exported(Result<String, String>),
     /// Ctrl+Y: copy the last reply.
     CopyLastReply,
     /// Text was handed to the clipboard (`what` describes it).
@@ -148,6 +150,13 @@ pub enum Effect {
     ReadFile(String),
     /// List the completions of a partial path.
     CompletePath(String),
+    /// Write an exported conversation to `path`, or to a new file named after
+    /// `suggested` in the current directory when `path` is `None`. Never overwrites.
+    Export {
+        path: Option<String>,
+        suggested: String,
+        content: String,
+    },
     /// Copy text to the clipboard; `what` describes it for the confirmation.
     Copy { text: String, what: String },
     /// Index a folder (`root` as typed; `~` allowed, or a collection name to update it)

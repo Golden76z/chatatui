@@ -122,6 +122,7 @@ tests/      app_flow.rs http_clients.rs fixtures/*.sse
 | J14 ✅ | Clipboard: `/copy [code [n]]`, Ctrl+Y; system tool (wl-copy, xclip, xsel, pbcopy) plus OSC 52; numbered code blocks |
 | J15 ✅ | Nearly full context: `/compact` suggested past `compact_threshold` (90 %); `auto_compact` summarizes before sending the next message (given back on failure) |
 | J16 ✅ | RAG extras: OCR for scanned PDFs (tesseract + pdftoppm), `/rag a,b` over several collections, `auto_index` of changed collections at startup |
+| J17 ✅ | `/edit` last message and resend, `/retry [model]`, `/export [file.md]` to Markdown |
 
 Each milestone ends with `cargo fmt`, `cargo clippy --all-targets -- -D warnings`,
 `cargo test` passing.
@@ -131,5 +132,4 @@ Out of scope for now: tool calling, themes.
 ## Next steps (ideas)
 
 - RAG: re-ranking with a cross-encoder; watching folders while chatatui runs.
-- Export a conversation to Markdown; edit and resend a previous message.
 

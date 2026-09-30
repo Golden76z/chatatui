@@ -163,6 +163,11 @@ impl Conversation {
         self.next_id
     }
 
+    /// Removes the message `from` and every message after it.
+    pub fn truncate(&mut self, from: MessageId) {
+        self.messages.retain(|m| m.id < from);
+    }
+
     /// Mutable access to a message by id.
     pub fn get_mut(&mut self, id: MessageId) -> Option<&mut Message> {
         // Ids are increasing, so the message is found by binary search.

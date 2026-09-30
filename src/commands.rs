@@ -19,6 +19,9 @@ pub enum CommandId {
     Rename,
     Delete,
     Copy,
+    Edit,
+    Retry,
+    Export,
     Help,
     Quit,
 }
@@ -209,6 +212,33 @@ pub const COMMANDS: &[CommandSpec] = &[
         legacy_shortcut: None,
     },
     CommandSpec {
+        id: CommandId::Edit,
+        name: "edit",
+        aliases: &["modifier"],
+        arg: Arg::None,
+        description: "Modifier votre dernier message et le renvoyer",
+        shortcut: None,
+        legacy_shortcut: None,
+    },
+    CommandSpec {
+        id: CommandId::Retry,
+        name: "retry",
+        aliases: &["regenerer", "régénérer"],
+        arg: Arg::Optional("[modèle]"),
+        description: "Régénérer la dernière réponse (avec un autre modèle si donné)",
+        shortcut: None,
+        legacy_shortcut: None,
+    },
+    CommandSpec {
+        id: CommandId::Export,
+        name: "export",
+        aliases: &["exporter"],
+        arg: Arg::Optional("[fichier.md]"),
+        description: "Exporter la conversation en Markdown",
+        shortcut: None,
+        legacy_shortcut: None,
+    },
+    CommandSpec {
         id: CommandId::Help,
         name: "help",
         aliases: &["aide", "?"],
@@ -391,7 +421,11 @@ mod tests {
             names(&suggestions("/")),
             names(&COMMANDS.iter().collect::<Vec<_>>())
         );
-        assert_eq!(names(&suggestions("/m")), vec!["model"]);
+        assert_eq!(
+            names(&suggestions("/m")),
+            vec!["model", "edit"],
+            "edit via its « modifier » alias"
+        );
         assert_eq!(names(&suggestions("/h")), vec!["history", "help"]);
         assert_eq!(
             names(&suggestions("/co")),
@@ -405,7 +439,7 @@ mod tests {
         assert_eq!(names(&suggestions("/p")), vec!["prompt"]);
         assert_eq!(
             names(&suggestions("/ex")),
-            vec!["quit"],
+            vec!["export", "quit"],
             "aliases match too"
         );
         assert!(
@@ -420,7 +454,7 @@ mod tests {
     fn palette_search_includes_descriptions() {
         assert_eq!(
             names(&search("conversation")),
-            vec!["new", "history", "rename", "delete"]
+            vec!["new", "history", "rename", "delete", "export"]
         );
         assert_eq!(
             names(&search("contexte")),
@@ -428,7 +462,7 @@ mod tests {
         );
         assert_eq!(
             names(&search("/mod")),
-            vec!["model", "prompt"],
+            vec!["model", "prompt", "edit", "retry"],
             "« modèle » in a description"
         );
         assert_eq!(search("").len(), COMMANDS.len());

@@ -217,6 +217,7 @@ impl Runtime {
             }
             Event::App(AppEvent::Models(result)) => Some(Action::ModelsListed(result)),
             Event::App(AppEvent::FileRead(result)) => Some(Action::FileRead(result)),
+            Event::App(AppEvent::Exported(result)) => Some(Action::Exported(result)),
             Event::App(AppEvent::Copied { what, chars, how }) => {
                 Some(Action::Copied { what, chars, how })
             }
@@ -305,6 +306,18 @@ impl Runtime {
                     let result = files::read_attachment(&path);
                     // Fails only while shutting down.
                     let _ = sender.send(Event::App(AppEvent::FileRead(result)));
+                });
+            }
+            Effect::Export {
+                path,
+                suggested,
+                content,
+            } => {
+                let sender = self.events.sender();
+                tokio::task::spawn_blocking(move || {
+                    let result = crate::files::write_new(path.as_deref(), &suggested, &content);
+                    // Fails only while shutting down.
+                    let _ = sender.send(Event::App(AppEvent::Exported(result)));
                 });
             }
             Effect::Copy { text, what } => {

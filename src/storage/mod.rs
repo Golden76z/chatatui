@@ -84,6 +84,8 @@ pub enum StoreRequest {
     List,
     /// Conversations whose title or messages contain every word of the query.
     Search(String),
+    /// Delete a conversation's messages from `from` (a message id) on.
+    Truncate { id: ConversationId, from: u64 },
     /// Change a conversation's title.
     Rename { id: ConversationId, title: String },
     /// Delete a conversation and its messages.
@@ -214,6 +216,7 @@ impl Store {
                 })
             }),
             StoreRequest::Rename { id, title } => self.rename(&id, &title).map(|()| None),
+            StoreRequest::Truncate { id, from } => self.truncate(&id, from).map(|()| None),
             StoreRequest::DeleteConversation(id) => self
                 .delete(&id)
                 .map(|()| Some(StoreEvent::ConversationDeleted(id))),
@@ -365,6 +368,15 @@ impl Store {
             ))
         })?;
         Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Deletes the messages of a conversation from `from` (a message id) on.
+    pub fn truncate(&mut self, id: &ConversationId, from: u64) -> Result<(), StoreError> {
+        self.conn.execute(
+            "DELETE FROM messages WHERE conversation_id = ?1 AND seq >= ?2",
+            params![id.0, i64::try_from(from).unwrap_or(i64::MAX)],
+        )?;
+        Ok(())
     }
 
     /// Changes a conversation's title (no-op if it does not exist).

@@ -113,6 +113,54 @@ pub fn common_prefix(candidates: &[String]) -> String {
     prefix.into_iter().collect()
 }
 
+/// Writes `content` to a file that does not exist yet: `path` (`~` allowed), or
+/// `suggested` in the current directory; `-2`, `-3`… are added before the extension
+/// when the name is taken. Returns the path written (user-facing errors).
+pub fn write_new(path: Option<&str>, suggested: &str, content: &str) -> Result<String, String> {
+    let wanted = match path {
+        Some(path) => expand_home(path),
+        None => PathBuf::from(suggested),
+    };
+    let wanted = if wanted.extension().is_none() {
+        wanted.with_extension("md")
+    } else {
+        wanted
+    };
+    let stem = wanted
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "conversation".into());
+    let extension = wanted
+        .extension()
+        .map(|e| e.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "md".into());
+    for n in 1..1000 {
+        let candidate = if n == 1 {
+            wanted.clone()
+        } else {
+            wanted.with_file_name(format!("{stem}-{n}.{extension}"))
+        };
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(mut file) => {
+                use std::io::Write;
+                file.write_all(content.as_bytes())
+                    .map_err(|e| format!("{} : {e}", candidate.display()))?;
+                return Ok(candidate.display().to_string());
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(format!("{} : {e}", candidate.display())),
+        }
+    }
+    Err(format!(
+        "{} : trop de fichiers du même nom",
+        wanted.display()
+    ))
+}
+
 /// File name of a path, for short messages.
 pub fn file_name(source: &str) -> String {
     Path::new(source)
@@ -200,5 +248,18 @@ mod tests {
     fn home_is_expanded() {
         assert!(!expand_home("~/x").starts_with("~"));
         assert_eq!(expand_home("rel/x"), PathBuf::from("rel/x"));
+    }
+
+    #[test]
+    fn write_new_never_overwrites() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let target = dir.path().join("notes");
+        let target = target.to_string_lossy().into_owned();
+        let first = write_new(Some(&target), "x.md", "un").expect("write");
+        assert!(first.ends_with("notes.md"), "{first}");
+        let second = write_new(Some(&target), "x.md", "deux").expect("write");
+        assert!(second.ends_with("notes-2.md"), "{second}");
+        assert_eq!(std::fs::read_to_string(&first).expect("read"), "un");
+        assert!(write_new(Some("/definitely/not/here/x.md"), "x.md", "").is_err());
     }
 }
