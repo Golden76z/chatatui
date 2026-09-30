@@ -168,6 +168,18 @@ impl Transcript {
         self.last_rendered
     }
 
+    /// First display line of message `id`, once rendered.
+    pub fn line_of(&self, id: MessageId) -> Option<usize> {
+        let mut line = 0;
+        for entry in &self.entries {
+            if entry.id == id {
+                return Some(line);
+            }
+            line += entry.lines.len();
+        }
+        None
+    }
+
     /// The `height` lines starting at `offset`.
     pub fn visible(&self, offset: usize, height: usize) -> Vec<Line<'static>> {
         self.entries

@@ -125,6 +125,8 @@ pub enum StoreRequest {
     DeleteConversation(ConversationId),
     /// Load one conversation.
     Load(ConversationId),
+    /// Load one conversation to preview it in the conversation list.
+    Preview(ConversationId),
     /// List document collections (RAG).
     ListCollections,
     /// Delete a document collection's index (`/forget`).
@@ -140,6 +142,8 @@ pub enum StoreEvent {
         now: i64,
     },
     Loaded(StoredConversation),
+    /// Result of [`StoreRequest::Preview`].
+    Previewed(StoredConversation),
     /// Result of [`StoreRequest::Search`]: each conversation with an excerpt of a matching
     /// message (`None` when only the title matches).
     Searched {
@@ -251,6 +255,7 @@ impl Store {
                 })
             }),
             StoreRequest::Load(id) => self.load(&id).map(|c| Some(StoreEvent::Loaded(c))),
+            StoreRequest::Preview(id) => self.load(&id).map(|c| Some(StoreEvent::Previewed(c))),
             StoreRequest::InputHistory => self
                 .input_history(INPUT_HISTORY)
                 .map(|h| Some(StoreEvent::InputHistory(h))),

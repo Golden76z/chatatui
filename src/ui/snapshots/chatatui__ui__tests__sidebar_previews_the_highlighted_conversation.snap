@@ -1,0 +1,18 @@
+---
+source: src/ui/mod.rs
+expression: "draw(&mut app, 100, 14).backend()"
+---
+"╭ Conversations ───────────────────────╮ Aperçu · Tarte tatin · Entrée ouvre · Échap revient        "
+"│⌕ tapez pour chercher                 │ ▌ Vous                                                     "
+"│                                      │ Comment réussir le caramel ?                               "
+"│▌ Tarte tatin                         │                                                            "
+"│  il y a 3 h · qwen2.5:7b             │ ▌ Assistant                                                "
+"│                                      │ À sec, sans remuer.                                        "
+"│                                      │                                                            "
+"│                                      │                                                            "
+"│                                      │                                                            "
+"│                                      │                                                            "
+"│                                      │╭ Message ─────────────────────────────────────────────────╮"
+"│                                      ││ Écrivez votre message…                                   │"
+"╰───────────── Ctrl+R renommer · Suppr ╯╰──────────────────────────────────────────────────────────╯"
+" ● Prêt │ Ollama › llama3.2         ↑↓ choisir · Entrée ouvrir · tapez pour chercher · Échap fermer "

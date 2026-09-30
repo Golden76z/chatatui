@@ -237,6 +237,42 @@ mod tests {
     }
 
     #[test]
+    fn sidebar_previews_the_highlighted_conversation() {
+        let mut app = App::new(&Config::default(), false);
+        app.update(Action::Resize {
+            width: 100,
+            height: 14,
+        });
+        app.update(Action::ToggleSidebar);
+        app.update(Action::Storage(StoreEvent::Listed {
+            conversations: vec![summary("b", "Tarte tatin", "qwen2.5:7b", 3 * 3600)],
+            now: 1_000_000,
+        }));
+        let mut stored = crate::state::Conversation::new();
+        stored.push(
+            crate::state::Role::User,
+            "Comment réussir le caramel ?",
+            crate::state::MessageStatus::Complete,
+        );
+        stored.push(
+            crate::state::Role::Assistant,
+            "À sec, sans remuer.",
+            crate::state::MessageStatus::Complete,
+        );
+        app.update(Action::Storage(StoreEvent::Previewed(
+            crate::storage::StoredConversation {
+                summary: summary("b", "Tarte tatin", "qwen2.5:7b", 3 * 3600),
+                messages: stored.messages().to_vec(),
+                context_start: 0,
+                rag_collection: None,
+                persona: None,
+                tails: Vec::new(),
+            },
+        )));
+        insta::assert_snapshot!(draw(&mut app, 100, 14).backend());
+    }
+
+    #[test]
     fn sidebar_loading() {
         let mut app = App::new(&Config::default(), false);
         app.update(Action::ToggleSidebar);

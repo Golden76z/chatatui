@@ -19,6 +19,8 @@
 - **J26**: Windows — `clip.exe`, Windows paths, CI job and release binary.
 - **J27**: local re-ranking — `rerank_url` (llama.cpp `--reranking`, Text Embeddings
   Inference, Infinity).
+- **J28**: preview of the highlighted conversation in the list (from the first search
+  match), wider list and command suggestions.
 
 ## Next
 

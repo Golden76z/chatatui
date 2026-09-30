@@ -2,11 +2,11 @@
 source: src/ui/mod.rs
 expression: "draw(&mut app, 90, 8).backend()"
 ---
-"╭ Conversations ─────────────╮                          chatatui                          "
-"│⌕ tapez pour chercher       │                 modèle : Ollama › llama3.2                 "
-"│                            │                                                            "
-"│Chargement…                 │        Écrivez un message ci-dessous pour commencer.       "
-"│                            │╭ Message ─────────────────────────────────────────────────╮"
-"│                            ││ Écrivez votre message…                                   │"
-"╰─── Ctrl+R renommer · Suppr ╯╰──────────────────────────────────────────────────────────╯"
+"╭ Conversations ───────────────────╮                       chatatui                       "
+"│⌕ tapez pour chercher             │              modèle : Ollama › llama3.2              "
+"│                                  │                                                      "
+"│Chargement…                       │     Écrivez un message ci-dessous pour commencer.    "
+"│                                  │╭ Message ───────────────────────────────────────────╮"
+"│                                  ││ Écrivez votre message…                             │"
+"╰───────── Ctrl+R renommer · Suppr ╯╰────────────────────────────────────────────────────╯"
 " ● Prêt │ Ollama › llama3.2                     ↑↓ choisir · Entrée ouvrir · Échap fermer "

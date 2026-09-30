@@ -133,6 +133,7 @@ tests/      app_flow.rs http_clients.rs fixtures/*.sse
 | J25 ✅ | Versions: `/edit` and `/retry` keep the replaced messages (schema v10 `message_tails`), `‹ n/total ›` marker, Alt+←/→ to switch; the version shown is what gets sent |
 | J26 ✅ | Windows: `clip.exe` (also in WSL, UTF-16), `\` paths in `/add` / `/index` completion, full key reporting in the Windows console, CI job and `.zip` release; tests pass under Wine |
 | J27 ✅ | Local re-ranking: `rerank_url` for a dedicated server (llama.cpp `--reranking`, TEI, Infinity), Cohere and TEI formats detected and remembered, reranker shown in `/context` |
+| J28 ✅ | Conversation list: previews the highlighted conversation (from the first search match, scrollable, current conversation untouched), wider list (48 columns, ≤ 40 %), wider command suggestions (≤ 120 columns) |
 
 Continuous integration (`.github/workflows/ci.yml`) runs the same checks on every push;
 pushing a `v*` tag builds release binaries (`release.yml`).

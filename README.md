@@ -261,7 +261,7 @@ Start a message with `//` to send text that begins with a slash.
 | `Shift+Enter` / `Alt+Enter` / `Ctrl+J` | New line (`Shift+Enter` needs the kitty keyboard protocol) |
 | `Esc` | Close the popup or panel, otherwise cancel the running generation, otherwise stop indexing |
 | `Ctrl+N` | New conversation |
-| `Ctrl+L` | Conversation list: `↑`/`↓` to choose, `Enter` to open, type to search every message (accents and case ignored), `Ctrl+R` to rename, `Suppr` twice to delete, `Esc` clears the search then closes |
+| `Ctrl+L` | Conversation list: `↑`/`↓` to choose (the highlighted conversation is previewed; while searching, from its first match; `PgUp`/`PgDn` scroll it), `Enter` to open, type to search every message (accents and case ignored), `Ctrl+R` to rename, `Suppr` twice to delete, `Esc` clears the search then closes |
 | `Ctrl+M` / `F2` | Choose the model (type to filter). `Ctrl+M` needs the kitty keyboard protocol |
 | `Ctrl+P` | Command palette |
 | `Ctrl+Y` | Copy the last reply |

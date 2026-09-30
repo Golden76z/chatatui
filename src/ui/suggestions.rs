@@ -10,23 +10,12 @@ use ratatui::{
 
 use crate::{app::App, commands::CommandSpec, markdown::display_width};
 
-const MAX_WIDTH: u16 = 72;
+/// Widest the list gets (it is as wide as its longest row, within the input's width).
+const MAX_WIDTH: u16 = 120;
 const MAX_ROWS: u16 = 8;
 
 /// Draws the suggestion list just above `input`, over the bottom of `chat`.
 pub fn render(app: &App, suggestions: &[&CommandSpec], frame: &mut Frame, chat: Rect, input: Rect) {
-    let rows = u16::try_from(suggestions.len())
-        .unwrap_or(MAX_ROWS)
-        .min(MAX_ROWS);
-    let height = (rows + 2).min(chat.height);
-    let area = Rect {
-        x: input.x,
-        y: input.y.saturating_sub(height),
-        width: input.width.min(MAX_WIDTH),
-        height,
-    };
-    frame.render_widget(Clear, area);
-
     let usage_width = suggestions
         .iter()
         .map(|c| display_width(&c.usage()))

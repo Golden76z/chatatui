@@ -4,7 +4,7 @@ use ratatui::{
     Frame,
     layout::{Constraint, Flex, Layout, Rect},
     style::{Style, Stylize},
-    text::{Line, Text},
+    text::{Line, Span, Text},
     widgets::Paragraph,
 };
 
@@ -12,6 +12,10 @@ use crate::{app::App, layout};
 
 /// Draws the conversation, or a welcome screen when it is empty.
 pub fn render(app: &App, frame: &mut Frame, area: Rect) {
+    if let Some(preview) = &app.preview {
+        render_preview(app, preview, frame, area);
+        return;
+    }
     if app.conversation.is_empty() {
         render_welcome(app, frame, area);
         return;
@@ -40,6 +44,25 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
             });
         frame.render_widget(hint, hint_area);
     }
+}
+
+/// The conversation highlighted in the list, under a line saying it is only a preview.
+fn render_preview(app: &App, preview: &crate::app::Preview, frame: &mut Frame, area: Rect) {
+    let [header, body] = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
+    let palette = crate::theme::palette();
+    let title = super::sidebar::truncate(&preview.title, usize::from(area.width) / 2);
+    let line = Line::from(vec![
+        Span::raw(" Aperçu · "),
+        Span::styled(title, Style::default().bold()),
+        Span::raw(" · Entrée ouvre · Échap revient "),
+    ])
+    .style(Style::default().fg(palette.badge_fg).bg(palette.badge_bg));
+    frame.render_widget(line, header);
+
+    let content = layout::chat_content(body);
+    let height = usize::from(content.height);
+    let lines = preview.transcript.visible(app.preview_offset(), height);
+    frame.render_widget(Paragraph::new(Text::from(lines)), content);
 }
 
 fn render_welcome(app: &App, frame: &mut Frame, area: Rect) {

@@ -91,6 +91,14 @@ pub fn file_name(title: &str) -> String {
     }
 }
 
+/// `text` in lower case without accents, for matching the way the search does.
+pub fn folded(text: &str) -> String {
+    text.chars()
+        .flat_map(fold_accent)
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
 /// `é` → `e`, `œ` → `oe`, … (common French and Western letters).
 fn fold_accent(c: char) -> Vec<char> {
     let folded = match c {

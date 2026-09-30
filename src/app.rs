@@ -311,6 +311,10 @@ pub struct App {
     pub generation: Option<Generation>,
     /// The conversation list, when open.
     pub sidebar: Option<Sidebar>,
+    /// The conversation highlighted in the list, shown instead of the current one.
+    pub preview: Option<Preview>,
+    /// Conversation whose preview was requested and has not arrived yet.
+    preview_requested: Option<ConversationId>,
     /// The open popup (model picker, palette, help), if any.
     pub overlay: Option<Overlay>,
     /// Highlighted slash-command suggestion.
@@ -418,6 +422,8 @@ impl App {
             input: new_input(),
             generation: None,
             sidebar: None,
+            preview: None,
+            preview_requested: None,
             overlay: None,
             suggestion: 0,
             suggestions_dismissed: false,
@@ -676,7 +682,8 @@ impl App {
                 ..
             }
         );
-        let effects = self.apply(action);
+        let mut effects = self.apply(action);
+        effects.extend(self.sync_preview());
         if !is_token {
             self.refresh_view();
         }
@@ -692,12 +699,117 @@ impl App {
             width,
             self.conversation.context_start(),
         );
+        if let Some(preview) = &mut self.preview {
+            preview.transcript.refresh(
+                preview.conversation.messages(),
+                width,
+                preview.conversation.context_start(),
+            );
+        }
+    }
+
+    /// The conversation the list highlights, when it is not the one displayed.
+    fn preview_wanted(&self) -> Option<&ConversationId> {
+        let item = self.sidebar.as_ref()?.selected_item()?;
+        (Some(&item.id) != self.conversation_id.as_ref()).then_some(&item.id)
+    }
+
+    /// Requests the preview of the highlighted conversation, or drops a stale one.
+    fn sync_preview(&mut self) -> Vec<Effect> {
+        let Some(wanted) = self.preview_wanted().cloned() else {
+            self.preview = None;
+            self.preview_requested = None;
+            return Vec::new();
+        };
+        if self.preview.as_ref().is_some_and(|p| p.id == wanted)
+            || self.preview_requested.as_ref() == Some(&wanted)
+        {
+            return Vec::new();
+        }
+        self.preview_requested = Some(wanted.clone());
+        vec![Effect::Store(StoreRequest::Preview(wanted))]
+    }
+
+    /// Shows a conversation loaded for the preview, if it is still the one highlighted.
+    fn show_preview(&mut self, stored: StoredConversation) {
+        if self.preview_requested.as_ref() == Some(&stored.summary.id) {
+            self.preview_requested = None;
+        }
+        if self.preview_wanted() != Some(&stored.summary.id) {
+            return;
+        }
+        let conversation = Conversation::from_messages(stored.messages, stored.context_start);
+        // While searching, show the first message that matches.
+        let filter = self.sidebar.as_ref().map_or("", |s| s.filter.trim());
+        let words: Vec<String> = crate::export::folded(filter)
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect();
+        let anchor = (!words.is_empty())
+            .then(|| {
+                let folded: Vec<(MessageId, String)> = conversation
+                    .messages()
+                    .iter()
+                    .map(|m| (m.id, crate::export::folded(&m.content)))
+                    .collect();
+                folded
+                    .iter()
+                    .find(|(_, text)| words.iter().all(|w| text.contains(w.as_str())))
+                    .or_else(|| {
+                        folded
+                            .iter()
+                            .find(|(_, text)| words.iter().any(|w| text.contains(w.as_str())))
+                    })
+                    .map(|(id, _)| *id)
+            })
+            .flatten();
+        self.preview = Some(Preview {
+            id: stored.summary.id,
+            title: stored.summary.title,
+            conversation,
+            transcript: Transcript::default(),
+            anchor,
+            scrolled: None,
+        });
+    }
+
+    /// First line of the preview shown: its matching message, or the end.
+    pub fn preview_offset(&self) -> usize {
+        let Some(preview) = &self.preview else {
+            return 0;
+        };
+        // One line is taken by the preview's header.
+        let height = usize::from(self.chat_area().height.saturating_sub(1));
+        let bottom = preview.transcript.total_lines().saturating_sub(height);
+        preview
+            .scrolled
+            .or_else(|| preview.anchor.and_then(|id| preview.transcript.line_of(id)))
+            .map_or(bottom, |line| line.min(bottom))
     }
 
     fn apply(&mut self, action: Action) -> Vec<Effect> {
         let total = self.transcript.total_lines();
         let height = usize::from(self.chat_area().height);
         let page = height.saturating_sub(2).max(1);
+        // Scrolling moves the preview while one is shown.
+        if self.preview.is_some() {
+            let delta = match action {
+                Action::ScrollUp(lines) => Some(-isize::try_from(lines).unwrap_or(isize::MAX)),
+                Action::ScrollDown(lines) => Some(isize::try_from(lines).unwrap_or(isize::MAX)),
+                Action::PageUp => Some(-isize::try_from(page).unwrap_or(isize::MAX)),
+                Action::PageDown => Some(isize::try_from(page).unwrap_or(isize::MAX)),
+                Action::ScrollToTop => Some(isize::MIN),
+                Action::ScrollToBottom => Some(isize::MAX),
+                _ => None,
+            };
+            if let Some(delta) = delta {
+                let offset = self.preview_offset();
+                if let Some(preview) = &mut self.preview {
+                    preview.scrolled = Some(offset.saturating_add_signed(delta));
+                }
+                return Vec::new();
+            }
+        }
         match action {
             Action::Quit => {
                 self.running = false;
@@ -2487,6 +2599,10 @@ impl App {
                 Vec::new()
             }
             StoreEvent::Loaded(stored) => self.load(stored),
+            StoreEvent::Previewed(stored) => {
+                self.show_preview(stored);
+                Vec::new()
+            }
             StoreEvent::InputHistory(history) => {
                 // Messages sent meanwhile stay at the end.
                 let mut merged = history;
@@ -2713,6 +2829,21 @@ impl App {
         self.sidebar = None;
         self.status = Status::Ready;
     }
+}
+
+/// A conversation shown while it is highlighted in the list (not loaded: the current
+/// conversation, and any reply being generated, are left alone).
+#[derive(Debug)]
+pub struct Preview {
+    pub id: ConversationId,
+    pub title: String,
+    pub conversation: Conversation,
+    /// Display lines, refreshed like the main transcript.
+    pub transcript: Transcript,
+    /// Message shown at the top (the first match of the search), else the end is shown.
+    pub anchor: Option<MessageId>,
+    /// First line shown once scrolled by the user.
+    pub scrolled: Option<usize>,
 }
 
 /// Keeps only the citations the reply refers to (`[2]`, `[1, 3]`), when it cites any.
@@ -3234,6 +3365,119 @@ mod tests {
             app.update(Action::SidebarOpen),
             vec![Effect::Store(StoreRequest::Load(ConversationId(
                 "y".into()
+            )))]
+        );
+    }
+
+    fn stored(id: &str, texts: &[&str]) -> StoredConversation {
+        let mut conversation = Conversation::new();
+        for (i, text) in texts.iter().enumerate() {
+            let role = if i % 2 == 0 {
+                Role::User
+            } else {
+                Role::Assistant
+            };
+            conversation.push(role, *text, MessageStatus::Complete);
+        }
+        StoredConversation {
+            summary: crate::storage::ConversationSummary {
+                id: ConversationId(id.into()),
+                title: format!("Titre {id}"),
+                provider: "ollama".into(),
+                model: "qwen2.5".into(),
+                updated_at: 0,
+            },
+            messages: conversation.messages().to_vec(),
+            context_start: 0,
+            rag_collection: None,
+            persona: None,
+            tails: Vec::new(),
+        }
+    }
+
+    fn preview_request(effects: &[Effect]) -> Option<&str> {
+        effects.iter().find_map(|e| match e {
+            Effect::Store(StoreRequest::Preview(id)) => Some(id.0.as_str()),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn the_highlighted_conversation_is_previewed_without_being_opened() {
+        let mut app = sized_app();
+        let job = send(&mut app, "Question en cours");
+        let current = app.conversation_id.clone().expect("id");
+        app.update(Action::ToggleSidebar);
+        let effects = app.update(Action::Storage(StoreEvent::Listed {
+            conversations: vec![stored(&current.0, &[]).summary, stored("x", &[]).summary],
+            now: 0,
+        }));
+        assert_eq!(preview_request(&effects), None, "the current one is shown");
+
+        assert_eq!(preview_request(&app.update(Action::SidebarDown)), Some("x"));
+        app.update(Action::Storage(StoreEvent::Previewed(stored(
+            "x",
+            &["Autre question", "Autre réponse"],
+        ))));
+        let preview = app.preview.as_ref().expect("preview");
+        assert_eq!(preview.title, "Titre x");
+        assert!(preview.transcript.total_lines() > 0, "rendered");
+        assert!(app.is_generating(), "the reply goes on");
+        assert_eq!(app.conversation_id.as_ref(), Some(&current), "not opened");
+
+        // Back on the current conversation: no preview. A late answer is ignored.
+        app.update(Action::SidebarUp);
+        assert!(app.preview.is_none());
+        app.update(Action::Storage(StoreEvent::Previewed(stored("x", &["?"]))));
+        assert!(app.preview.is_none());
+
+        // Esc closes the list and the preview.
+        assert_eq!(preview_request(&app.update(Action::SidebarDown)), Some("x"));
+        app.update(Action::Storage(StoreEvent::Previewed(stored("x", &["q"]))));
+        assert!(app.preview.is_some());
+        app.update(Action::Cancel);
+        assert!(app.sidebar.is_none() && app.preview.is_none());
+        llm(&mut app, job.request_id, LlmEvent::Done);
+    }
+
+    #[test]
+    fn a_search_preview_starts_at_the_first_match_and_scrolls() {
+        let mut app = sized_app();
+        app.update(Action::ToggleSidebar);
+        for c in "Crème".chars() {
+            app.update(Action::SidebarType(c));
+        }
+        let effects = app.update(Action::Storage(StoreEvent::Searched {
+            query: "Crème".into(),
+            results: vec![(stored("x", &[]).summary, Some("…crème brûlée…".into()))],
+            now: 0,
+        }));
+        assert_eq!(preview_request(&effects), Some("x"));
+        let mut texts: Vec<String> = (0..30).map(|i| format!("message {i}")).collect();
+        texts[4] = "La CREME brûlée".into();
+        let texts: Vec<&str> = texts.iter().map(String::as_str).collect();
+        app.update(Action::Storage(StoreEvent::Previewed(stored("x", &texts))));
+        let preview = app.preview.as_ref().expect("preview");
+        let matched = preview.conversation.messages()[4].id;
+        assert_eq!(preview.anchor, Some(matched));
+        let line = preview.transcript.line_of(matched).expect("rendered");
+        assert_eq!(app.preview_offset(), line);
+
+        app.update(Action::ScrollDown(2));
+        assert_eq!(app.preview_offset(), line + 2);
+        assert_eq!(
+            app.scroll,
+            ScrollState::default(),
+            "the conversation did not move"
+        );
+        app.update(Action::ScrollToTop);
+        assert_eq!(app.preview_offset(), 0);
+
+        // Enter opens it for real.
+        assert_eq!(
+            app.update(Action::SidebarOpen),
+            vec![Effect::Store(StoreRequest::Load(ConversationId(
+                "x".into()
             )))]
         );
     }

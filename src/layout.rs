@@ -7,7 +7,7 @@ use ratatui::layout::{Constraint, Layout, Rect};
 pub const MAX_INPUT_LINES: u16 = 8;
 
 /// Maximum width of the conversation list.
-pub const SIDEBAR_WIDTH: u16 = 32;
+pub const SIDEBAR_WIDTH: u16 = 48;
 
 /// Areas of the main screen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,7 +37,8 @@ pub fn compute(area: Rect, input_lines: usize, sidebar_open: bool) -> AppLayout 
         .clamp(1, MAX_INPUT_LINES);
     let [main, status] = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(area);
     let (sidebar, main) = if sidebar_open {
-        let width = SIDEBAR_WIDTH.min(main.width / 3);
+        // At most 40 % of the screen, so the conversation (or its preview) stays readable.
+        let width = SIDEBAR_WIDTH.min(main.width * 2 / 5);
         let [sidebar, main] =
             Layout::horizontal([Constraint::Length(width), Constraint::Min(1)]).areas(main);
         (Some(sidebar), main)
@@ -96,6 +97,6 @@ mod tests {
     #[test]
     fn sidebar_shrinks_on_narrow_screens() {
         let layout = compute(Rect::new(0, 0, 60, 20), 1, true);
-        assert_eq!(layout.sidebar.map(|s| s.width), Some(20));
+        assert_eq!(layout.sidebar.map(|s| s.width), Some(24));
     }
 }
