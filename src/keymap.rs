@@ -41,6 +41,7 @@ pub fn map_key(key: KeyEvent, context: KeyContext) -> Option<Action> {
                 KeyCode::Up => Some(Action::OverlayUp),
                 KeyCode::Down => Some(Action::OverlayDown),
                 KeyCode::Enter => Some(Action::OverlaySelect),
+                KeyCode::Delete => Some(Action::OverlayDelete),
                 KeyCode::Backspace => Some(Action::OverlayBackspace),
                 // Esc and the shortcut that opened a popup both close it.
                 KeyCode::Esc | KeyCode::F(1 | 2) => Some(Action::Cancel),
@@ -329,6 +330,11 @@ mod tests {
         assert_eq!(
             map(KeyCode::Backspace, KeyModifiers::NONE),
             Some(Action::OverlayBackspace)
+        );
+        // Only /models acts on it, but it must reach the app rather than typing a letter.
+        assert_eq!(
+            map(KeyCode::Delete, KeyModifiers::NONE),
+            Some(Action::OverlayDelete)
         );
         assert_eq!(map(KeyCode::Esc, KeyModifiers::NONE), Some(Action::Cancel));
         assert_eq!(

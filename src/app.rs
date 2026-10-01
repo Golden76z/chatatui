@@ -40,8 +40,8 @@ use crate::{
         store::CollectionSummary,
     },
     state::{
-        Citation, Conversation, Find, GgufPicker, MessageId, MessageStatus, ModelPicker, Overlay,
-        Palette, Role, ScrollState, Sidebar, Status,
+        Citation, Conversation, Find, GgufPicker, MessageId, MessageStatus, ModelPicker, ModelRow,
+        ModelsPicker, Overlay, Palette, Role, ScrollState, Sidebar, Status,
     },
     storage::{
         ConversationId, ConversationRecord, StoreEvent, StoreRequest, StoredConversation, Tail,
@@ -932,6 +932,7 @@ impl App {
                     Some(Overlay::ModelPicker(picker)) => picker.select_previous(),
                     Some(Overlay::Palette(palette)) => palette.select_previous(),
                     Some(Overlay::GgufPicker(picker)) => picker.move_selection(-1),
+                    Some(Overlay::Models(picker)) => picker.move_selection(-1),
                     Some(_) => self.scroll_popup(-1),
                     None => {}
                 }
@@ -942,6 +943,7 @@ impl App {
                     Some(Overlay::ModelPicker(picker)) => picker.select_next(),
                     Some(Overlay::Palette(palette)) => palette.select_next(),
                     Some(Overlay::GgufPicker(picker)) => picker.move_selection(1),
+                    Some(Overlay::Models(picker)) => picker.move_selection(1),
                     Some(_) => self.scroll_popup(1),
                     None => {}
                 }
@@ -960,6 +962,7 @@ impl App {
                     Some(Overlay::ModelPicker(picker)) => picker.push_filter(c),
                     Some(Overlay::Palette(palette)) => palette.push_filter(c),
                     Some(Overlay::GgufPicker(picker)) => picker.push_filter(c),
+                    Some(Overlay::Models(picker)) => picker.push_filter(c),
                     _ => {}
                 }
                 Vec::new()
@@ -969,9 +972,32 @@ impl App {
                     Some(Overlay::ModelPicker(picker)) => picker.pop_filter(),
                     Some(Overlay::Palette(palette)) => palette.pop_filter(),
                     Some(Overlay::GgufPicker(picker)) => picker.pop_filter(),
+                    Some(Overlay::Models(picker)) => picker.pop_filter(),
                     _ => {}
                 }
                 Vec::new()
+            }
+            Action::OverlayDelete => {
+                let Some(Overlay::Models(picker)) = &self.overlay else {
+                    return Vec::new();
+                };
+                match picker.selected().cloned() {
+                    Some(ModelRow::Downloaded(model)) => {
+                        vec![Effect::Store(StoreRequest::DeleteModel {
+                            repo: model.repo,
+                            file: model.file,
+                        })]
+                    }
+                    // Nothing on disk to delete; say so rather than doing nothing.
+                    Some(ModelRow::Available(entry)) => {
+                        if let Some(Overlay::Models(picker)) = &mut self.overlay {
+                            picker.message =
+                                Some(format!("« {} » n'est pas téléchargé.", entry.name));
+                        }
+                        Vec::new()
+                    }
+                    None => Vec::new(),
+                }
             }
             Action::OverlaySelect => match &self.overlay {
                 Some(Overlay::ModelPicker(_)) => self.select_model(),
@@ -988,6 +1014,13 @@ impl App {
                         None => Vec::new(),
                     }
                 }
+                Some(Overlay::Models(picker)) => match picker.selected() {
+                    Some(row) => {
+                        let repo = row.repo().to_owned();
+                        self.pull_from_models(repo)
+                    }
+                    None => Vec::new(),
+                },
                 Some(Overlay::Palette(palette)) => {
                     let command = palette.selected_command();
                     self.overlay = None;
@@ -1007,7 +1040,6 @@ impl App {
                     | Overlay::Prompt { .. }
                     | Overlay::Collections { .. }
                     | Overlay::Mcp { .. }
-                    | Overlay::Models { .. }
                     | Overlay::Compare { .. },
                 ) => {
                     self.overlay = None;
@@ -1349,7 +1381,13 @@ impl App {
             CommandId::Index => self.start_index(arg),
             CommandId::Pull => self.start_pull(arg.trim()),
             CommandId::Models => {
-                self.overlay = Some(Overlay::Models { scroll: 0 });
+                // Seeded from the cached inventory so reopening the popup shows the models
+                // right away; the request below refreshes it.
+                let cached = self
+                    .models
+                    .as_ref()
+                    .map(|(models, now)| (models.as_slice(), *now));
+                self.overlay = Some(Overlay::Models(ModelsPicker::new(cached)));
                 vec![Effect::Store(StoreRequest::ListModels)]
             }
             CommandId::RmModel => self.remove_model(arg.trim()),
@@ -2243,6 +2281,29 @@ impl App {
         }
     }
 
+    /// `Entrée` in the `/models` list: ask the Hub for a repository's files, whether or not
+    /// something from it is already on disk.
+    ///
+    /// A downloaded row leads here too, because the catalogue entry is hidden once any file
+    /// of that repository has landed — this is the only way to fetch a second quantization.
+    /// Running a model is not what this key does; the popup's footer says so.
+    fn pull_from_models(&mut self, repo: String) -> Vec<Effect> {
+        // Checked before the popup closes: a refusal must not cost the user the list and
+        // their place in it, and `Status` is not readable under an open overlay.
+        if let Some(progress) = &self.pulling {
+            let message = format!(
+                "téléchargement de « {} » déjà en cours (Échap pour l'arrêter)",
+                progress.file
+            );
+            if let Some(Overlay::Models(picker)) = &mut self.overlay {
+                picker.message = Some(message);
+            }
+            return Vec::new();
+        }
+        self.overlay = None;
+        self.start_pull(&repo)
+    }
+
     /// `/rm <repo> <file>`: deletes a downloaded model.
     fn remove_model(&mut self, arg: &str) -> Vec<Effect> {
         let mut words = arg.split_whitespace();
@@ -3115,6 +3176,9 @@ impl App {
                 vec![Effect::Store(StoreRequest::ListCollections)]
             }
             StoreEvent::Models { models, now } => {
+                if let Some(Overlay::Models(picker)) = &mut self.overlay {
+                    picker.set_models(models.clone(), now);
+                }
                 self.models = Some((models, now));
                 Vec::new()
             }

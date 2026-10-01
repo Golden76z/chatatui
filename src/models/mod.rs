@@ -4,10 +4,12 @@
 //! - [`hub`]: the HuggingFace client (list a repository's GGUF files, download one);
 //! - [`gguf`]: the metadata in a GGUF file's header;
 //! - [`store`]: the inventory of downloaded models;
-//! - [`download`]: the background job behind `/pull`.
+//! - [`download`]: the background job behind `/pull`;
+//! - [`catalog`]: the models `/models` offers when they are not downloaded yet.
 //!
 //! Running a model is not part of this module yet.
 
+pub mod catalog;
 pub mod download;
 pub mod gguf;
 pub mod hub;

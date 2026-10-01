@@ -1343,3 +1343,175 @@ async fn a_finished_pull_records_the_model_and_refreshes_the_list() {
         "{effects:?}"
     );
 }
+
+/// A downloaded model and the catalogue share one list, and `Entrée` on an entry that is
+/// not on disk asks the Hub for its files — the same path `/pull <dépôt>` takes.
+#[tokio::test]
+async fn models_offers_the_catalog_and_enter_starts_a_download() {
+    let mut harness = Harness::new(Arc::new(MockLlmClient::new(Vec::new())));
+
+    let effects = submit(&mut harness.app, "/models");
+    assert!(
+        effects.iter().any(|e| matches!(
+            e,
+            Effect::Store(chatatui::storage::StoreRequest::ListModels)
+        )),
+        "{effects:?}"
+    );
+    let Some(Overlay::Models(picker)) = &harness.app.overlay else {
+        panic!(
+            "the /models popup must be a list: {:?}",
+            harness.app.overlay
+        );
+    };
+    // Nothing downloaded yet, so every row is an offer.
+    assert_eq!(
+        picker.rows.len(),
+        chatatui::models::catalog::entries().len()
+    );
+
+    let effects = harness.app.update(Action::OverlaySelect);
+    let wanted = chatatui::models::catalog::entries()[0].repo;
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, Effect::ListGguf { repo, .. } if repo == wanted)),
+        "{effects:?}"
+    );
+    assert!(harness.app.overlay.is_none(), "the list closes on Enter");
+}
+
+/// The inventory arrives after the popup opens, so the open list must take it.
+#[tokio::test]
+async fn the_open_models_list_takes_the_inventory_when_it_arrives() {
+    let mut harness = Harness::new(Arc::new(MockLlmClient::new(Vec::new())));
+    submit(&mut harness.app, "/models");
+
+    harness
+        .app
+        .update(Action::Storage(chatatui::storage::StoreEvent::Models {
+            models: vec![local_model("someone/private-GGUF", "x.gguf")],
+            now: 2_000,
+        }));
+
+    let Some(Overlay::Models(picker)) = &harness.app.overlay else {
+        panic!("the popup must still be open");
+    };
+    assert!(picker.loaded);
+    assert_eq!(picker.rows[0].repo(), "someone/private-GGUF");
+}
+
+/// `Suppr` deletes the highlighted model, and says so when there is nothing to delete.
+#[tokio::test]
+async fn suppr_deletes_a_downloaded_model_and_refuses_an_offer() {
+    let mut harness = Harness::new(Arc::new(MockLlmClient::new(Vec::new())));
+    submit(&mut harness.app, "/models");
+    harness
+        .app
+        .update(Action::Storage(chatatui::storage::StoreEvent::Models {
+            models: vec![local_model("someone/private-GGUF", "x.gguf")],
+            now: 2_000,
+        }));
+
+    let effects = harness.app.update(Action::OverlayDelete);
+    assert!(
+        effects.iter().any(|e| matches!(
+            e,
+            Effect::Store(chatatui::storage::StoreRequest::DeleteModel { repo, file })
+                if repo == "someone/private-GGUF" && file == "x.gguf"
+        )),
+        "{effects:?}"
+    );
+
+    // The second row is an offer: nothing on disk, so nothing to delete.
+    harness.app.update(Action::OverlayDown);
+    let effects = harness.app.update(Action::OverlayDelete);
+    assert!(effects.is_empty(), "{effects:?}");
+    let Some(Overlay::Models(picker)) = &harness.app.overlay else {
+        panic!("the popup must still be open");
+    };
+    assert!(
+        picker
+            .message
+            .as_deref()
+            .is_some_and(|m| m.contains("n'est pas téléchargé")),
+        "{:?}",
+        picker.message
+    );
+}
+
+/// `Entrée` means download on every row, including one already on disk: that is the only
+/// way to fetch a second quantization of a repository, since the catalogue entry is hidden
+/// once anything from that repository has landed.
+#[tokio::test]
+async fn enter_on_a_downloaded_model_offers_another_quantization() {
+    let mut harness = Harness::new(Arc::new(MockLlmClient::new(Vec::new())));
+    submit(&mut harness.app, "/models");
+    harness
+        .app
+        .update(Action::Storage(chatatui::storage::StoreEvent::Models {
+            models: vec![local_model("someone/private-GGUF", "x.gguf")],
+            now: 2_000,
+        }));
+
+    let effects = harness.app.update(Action::OverlaySelect);
+
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, Effect::ListGguf { repo, .. } if repo == "someone/private-GGUF")),
+        "{effects:?}"
+    );
+    assert!(harness.app.overlay.is_none(), "the list closes on Enter");
+}
+
+/// A refused download must not cost the user the open list: the guard is consulted before
+/// the popup is closed, and the refusal is shown in the popup, where it can be read.
+#[tokio::test]
+async fn enter_in_the_models_list_is_refused_while_a_download_runs() {
+    let mut harness = Harness::new(Arc::new(MockLlmClient::new(Vec::new())));
+    harness.app.update(Action::Pull(
+        chatatui::models::download::PullEvent::Progress {
+            repo: "owner/name".to_owned(),
+            file: "m.gguf".to_owned(),
+            done: 10,
+            total: Some(100),
+            rate: 5,
+        },
+    ));
+    submit(&mut harness.app, "/models");
+
+    let effects = harness.app.update(Action::OverlaySelect);
+
+    assert!(
+        !effects.iter().any(|e| matches!(e, Effect::ListGguf { .. })),
+        "{effects:?}"
+    );
+    let Some(Overlay::Models(picker)) = &harness.app.overlay else {
+        panic!("the list must stay open when nothing was started");
+    };
+    assert!(
+        picker
+            .message
+            .as_deref()
+            .is_some_and(|m| m.contains("déjà en cours")),
+        "{:?}",
+        picker.message
+    );
+}
+
+fn local_model(repo: &str, file: &str) -> chatatui::models::store::LocalModel {
+    chatatui::models::store::LocalModel {
+        repo: repo.to_owned(),
+        revision: "main".to_owned(),
+        file: file.to_owned(),
+        path: format!("/models/{repo}/{file}"),
+        bytes: 400_000_000,
+        sha256: Some("abc".to_owned()),
+        architecture: Some("qwen3".to_owned()),
+        quantization: Some("Q4_K_M".to_owned()),
+        context_length: Some(40_960),
+        parameters: Some(596_000_000),
+        downloaded_at: 1_000,
+    }
+}

@@ -23,9 +23,9 @@ Claude is reached through the native Anthropic Messages API.
 - Answers from your documents (RAG): index folders of Markdown, text, source code, PDF,
   Word and LibreOffice files (`/index`), pick a collection per conversation (`/rag`), and
   replies list the passages they cite
-- Local model store: download a GGUF from HuggingFace (`/pull`), read its metadata and
-  list what is on disk (`/models`) — downloading and inspecting only, running them comes
-  later
+- Local model store: browse well-known GGUF models and the ones already on disk in one
+  list (`/models`), download from HuggingFace (`/pull`), read their metadata — downloading
+  and inspecting only, running them comes later
 - Configurable system prompt; network errors shown in the UI, never a crash
 
 ## Install
@@ -254,6 +254,19 @@ servers stop with chatatui.
 
 ### Local models
 
+`/models` is the way in: one list holding what is already on disk (`●`) and a short
+hand-picked set of well-known GGUF repositories that are not (`○`), smallest first. Type
+to filter, `Entrée` asks HuggingFace for that repository's files and opens the quantization
+picker, `Suppr` deletes a downloaded one. `Entrée` works on a row already on disk too —
+that is how you fetch a second quantization of a model you already have, since a
+repository drops out of the offered list once anything from it has landed. The line under
+the list details the highlighted model; the parameter count on the right is the signal for
+whether it will fit.
+
+The offered list is chosen, not measured: sorting HuggingFace by download count surfaces
+embedding, speech and image models, mirrors and "uncensored" forks rather than models worth
+offering. It is deliberately short and will age — `/pull` takes any repository.
+
 `/pull <dépôt> [fichier]` downloads a GGUF file from HuggingFace. The repository is
 written `owner/name`, but a pasted page URL works too:
 
@@ -274,9 +287,9 @@ download, and running the same `/pull` again resumes it from where it stopped in
 starting over. When HuggingFace publishes a checksum, the finished file is verified against
 it; when it does not, the model is listed as `⚠ non vérifié`.
 
-`/models` lists what is on disk, with what the file's own header says: quantization, size,
+What a downloaded model shows comes from the file's own header: quantization, size,
 architecture, context window and parameter count. `/rm <dépôt> <fichier>` deletes one file
-and its inventory row.
+and its inventory row from the input line, the same as `Suppr` in the list.
 
 ```toml
 [models]
@@ -324,7 +337,7 @@ run), or press `Ctrl+P` for the palette:
 | `/rag [collection,…\|off]` | Answer from one or more collections of documents (per conversation), or stop |
 | `/forget <collection>` | Delete a collection's index (run twice to confirm); files are not touched |
 | `/pull <dépôt> [fichier]` | Download a GGUF model from HuggingFace (a repository, or a pasted page URL); without a file name, pick one from the repository's list. `Esc` stops it, the same `/pull` resumes it |
-| `/models` | Models downloaded on this machine, with the metadata read from their header |
+| `/models` | Models on this machine and a short list of well-known ones that are not; `Entrée` downloads, `Suppr` deletes |
 | `/rm <dépôt> <fichier>` | Delete a downloaded model (the file and its inventory row) |
 | `/help` | Commands and key bindings (`F1`) |
 | `/quit` | Quit (`Ctrl+C`) |

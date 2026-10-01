@@ -56,6 +56,8 @@ pub enum Action {
     OverlayPageDown,
     /// Choose the highlighted item of the open popup.
     OverlaySelect,
+    /// Delete the highlighted item of the open popup (only /models acts on it).
+    OverlayDelete,
     /// Type a character in the popup filter.
     OverlayFilter(char),
     /// Delete the last character of the popup filter.

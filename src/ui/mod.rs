@@ -63,11 +63,11 @@ pub fn render(app: &App, frame: &mut Frame) {
             | Overlay::Context { .. }
             | Overlay::Prompt { .. }
             | Overlay::Collections { .. }
-            | Overlay::Mcp { .. }
-            | Overlay::Models { .. },
+            | Overlay::Mcp { .. },
         ) => {
             text_popup::render(app, frame, frame.area());
         }
+        Some(Overlay::Models(picker)) => models_view::render(picker, frame, frame.area()),
         Some(Overlay::Compare { .. }) => compare_view::render(app, frame, frame.area()),
         Some(Overlay::GgufPicker(picker)) => gguf_picker::render(picker, frame, frame.area()),
         None => {}

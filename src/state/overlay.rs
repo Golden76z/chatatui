@@ -1,6 +1,6 @@
 //! Modal popups drawn over the screen. Only one is open at a time and it has the focus.
 
-use super::{GgufPicker, ModelPicker, Palette};
+use super::{GgufPicker, ModelPicker, ModelsPicker, Palette};
 
 /// The open popup.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -27,10 +27,8 @@ pub enum Overlay {
     Mcp {
         scroll: u16,
     },
-    /// Downloaded models (/models).
-    Models {
-        scroll: u16,
-    },
+    /// Downloaded models and the ones the catalogue offers (/models).
+    Models(ModelsPicker),
     /// Which GGUF file of a repository to download (/pull <repo>).
     GgufPicker(GgufPicker),
     /// Two replies side by side (/compare).
@@ -64,13 +62,14 @@ impl Overlay {
     /// Keyboard behaviour of this popup.
     pub fn kind(&self) -> OverlayKind {
         match self {
-            Self::ModelPicker(_) | Self::Palette(_) | Self::GgufPicker(_) => OverlayKind::List,
+            Self::ModelPicker(_) | Self::Palette(_) | Self::GgufPicker(_) | Self::Models(_) => {
+                OverlayKind::List
+            }
             Self::Help { .. }
             | Self::Context { .. }
             | Self::Prompt { .. }
             | Self::Collections { .. }
-            | Self::Mcp { .. }
-            | Self::Models { .. } => OverlayKind::Text,
+            | Self::Mcp { .. } => OverlayKind::Text,
             Self::ToolConfirm { .. } => OverlayKind::Confirm,
             Self::Compare { .. } => OverlayKind::Compare,
         }
@@ -84,11 +83,11 @@ impl Overlay {
             | Self::Prompt { scroll }
             | Self::Collections { scroll }
             | Self::Mcp { scroll }
-            | Self::Models { scroll }
             | Self::Compare { scroll } => Some(scroll),
             Self::ModelPicker(_)
             | Self::Palette(_)
             | Self::GgufPicker(_)
+            | Self::Models(_)
             | Self::ToolConfirm { .. } => None,
         }
     }

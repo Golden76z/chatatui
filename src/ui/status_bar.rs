@@ -242,13 +242,19 @@ fn hint_candidates(app: &App) -> Vec<String> {
                 "Échap fermer ".into(),
             ];
         }
+        Some(Overlay::Models(_)) => {
+            return vec![
+                "↑↓ choisir · Entrée télécharger · Suppr supprimer · Échap fermer ".into(),
+                "↑↓ · Entrée · Suppr · Échap ".into(),
+                "Échap fermer ".into(),
+            ];
+        }
         Some(
             Overlay::Help { .. }
             | Overlay::Context { .. }
             | Overlay::Prompt { .. }
             | Overlay::Collections { .. }
-            | Overlay::Mcp { .. }
-            | Overlay::Models { .. },
+            | Overlay::Mcp { .. },
         ) => {
             return vec![
                 "↑↓ PgUp PgDn défiler · Échap fermer ".into(),
