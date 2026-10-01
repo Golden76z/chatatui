@@ -103,8 +103,25 @@ would be unreadable.
   🔧 read_file · ≈ 340 tokens transmis
 ```
 
-The out-of-context separator and the version markers (`‹ 2/3 ›`) keep their current places
-and become `dim`.
+### Where the version marker goes
+
+The version marker and the model name live in the role header today
+(`transcript.rs:214-228`), and that header is being deleted — so they need a new home. They
+move to a `dim` line **after** the body, at column 2, and only when the message actually has
+several versions:
+
+```
+  Utilise sort_unstable si l'ordre des égaux n'importe pas :
+
+  llama3.2 · ‹ 2/3 ›  Alt+← Alt+→
+```
+
+This is exactly the "metadata on demand" rule: nothing by default, the model named only when
+there is another version to compare it against.
+
+The out-of-context separator keeps its current place and becomes `dim`. Note that the user's
+messages are now `dim` too, so the separator is the *only* thing distinguishing an
+out-of-context message from an in-context one — it must keep being drawn.
 
 ## The waiting states
 
