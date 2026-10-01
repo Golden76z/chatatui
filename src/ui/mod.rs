@@ -11,9 +11,11 @@ mod collections_view;
 mod compare_view;
 mod context_view;
 mod find_bar;
+mod gguf_picker;
 mod help;
 mod mcp_view;
 mod model_picker;
+mod models_view;
 mod palette;
 mod prompt_view;
 mod sidebar;
@@ -61,11 +63,13 @@ pub fn render(app: &App, frame: &mut Frame) {
             | Overlay::Context { .. }
             | Overlay::Prompt { .. }
             | Overlay::Collections { .. }
-            | Overlay::Mcp { .. },
+            | Overlay::Mcp { .. }
+            | Overlay::Models { .. },
         ) => {
             text_popup::render(app, frame, frame.area());
         }
         Some(Overlay::Compare { .. }) => compare_view::render(app, frame, frame.area()),
+        Some(Overlay::GgufPicker(picker)) => gguf_picker::render(picker, frame, frame.area()),
         None => {}
     }
 }
@@ -585,6 +589,82 @@ mod tests {
             ..IndexReport::default()
         });
         insta::assert_snapshot!(draw(&mut app, 80, 24).backend());
+    }
+
+    #[test]
+    fn models_popup_lists_what_is_downloaded() {
+        use crate::models::store::LocalModel;
+        let mut app = App::new(&Config::default(), false);
+        let effects = app.run_command(crate::commands::CommandId::Models, "");
+        assert_eq!(
+            effects,
+            vec![Effect::Store(crate::storage::StoreRequest::ListModels)]
+        );
+        app.update(Action::Storage(StoreEvent::Models {
+            models: vec![
+                LocalModel {
+                    repo: "unsloth/Qwen3-0.6B-GGUF".into(),
+                    revision: "main".into(),
+                    file: "Qwen3-0.6B-Q4_K_M.gguf".into(),
+                    path: "/home/damien/.local/share/chatatui/models/Qwen3-0.6B-Q4_K_M.gguf".into(),
+                    bytes: 416_000_000,
+                    sha256: Some("a".repeat(64)),
+                    architecture: Some("qwen3".into()),
+                    quantization: Some("Q4_K_M".into()),
+                    context_length: Some(40_960),
+                    parameters: Some(596_000_000),
+                    downloaded_at: 1_000,
+                },
+                LocalModel {
+                    repo: "bartowski/Mistral-7B-GGUF".into(),
+                    revision: "main".into(),
+                    file: "Mistral-7B-Q8_0.gguf".into(),
+                    path: "~/.local/share/chatatui/models/bartowski/Mistral-7B-GGUF/Mistral-7B-Q8_0.gguf"
+                        .into(),
+                    bytes: 7_700_000_000,
+                    // No checksum from the Hub: the popup must say nothing was verified.
+                    sha256: None,
+                    architecture: Some("llama".into()),
+                    quantization: Some("Q8_0".into()),
+                    context_length: Some(32_768),
+                    parameters: None,
+                    downloaded_at: 1_000 - 3 * 86_400,
+                },
+            ],
+            now: 1_000 + 2 * 3600,
+        }));
+        insta::assert_snapshot!(draw(&mut app, 80, 22).backend());
+    }
+
+    #[test]
+    fn gguf_picker_lists_the_files_of_a_repository() {
+        use crate::models::hub::RemoteFile;
+        let mut app = App::new(&Config::default(), false);
+        let effects = app.run_command(crate::commands::CommandId::Pull, "unsloth/Qwen3-0.6B-GGUF");
+        assert_eq!(
+            effects,
+            vec![Effect::ListGguf {
+                repo: "unsloth/Qwen3-0.6B-GGUF".into(),
+                revision: None,
+            }]
+        );
+        app.update(Action::GgufFiles {
+            repo: "unsloth/Qwen3-0.6B-GGUF".into(),
+            result: Ok(vec![
+                RemoteFile {
+                    path: "Qwen3-0.6B-Q8_0.gguf".into(),
+                    bytes: 639_000_000,
+                    sha256: None,
+                },
+                RemoteFile {
+                    path: "Qwen3-0.6B-Q4_K_M.gguf".into(),
+                    bytes: 416_000_000,
+                    sha256: Some("b".repeat(64)),
+                },
+            ]),
+        });
+        app.update(Action::OverlayDown);
+        insta::assert_snapshot!(draw(&mut app, 80, 14).backend());
     }
 
     #[test]

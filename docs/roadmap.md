@@ -24,7 +24,11 @@
 - **J29**: find in the conversation (`Ctrl+F`).
 - **J30**: MCP servers (`[mcp.<name>]`, `/mcp`).
 - **J31**: `/compare <model>`, two replies side by side.
+- **J32**: local model store — `/pull` downloads a GGUF from HuggingFace (resumable,
+  sha256-checked), `/models` lists what is on disk with the metadata read from the file,
+  `/rm` deletes one. Downloading and inspecting only: nothing runs the models yet.
 
 ## Next
 
+- Running local models: GGUF tokenizer and inference (J33).
 - MCP over HTTP (remote servers), and `tools/list_changed` notifications.

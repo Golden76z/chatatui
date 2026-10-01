@@ -16,6 +16,9 @@ pub enum CommandId {
     Collections,
     Rag,
     Forget,
+    Pull,
+    Models,
+    RmModel,
     Rename,
     Delete,
     Copy,
@@ -186,6 +189,33 @@ pub const COMMANDS: &[CommandSpec] = &[
         aliases: &["oublier", "supprimer"],
         arg: Arg::Required("<collection>"),
         description: "Supprimer une collection (pas vos fichiers)",
+        shortcut: None,
+        legacy_shortcut: None,
+    },
+    CommandSpec {
+        id: CommandId::Pull,
+        name: "pull",
+        aliases: &["telecharger"],
+        arg: Arg::Required("<dépôt> [fichier]"),
+        description: "Télécharger un modèle GGUF depuis HuggingFace",
+        shortcut: None,
+        legacy_shortcut: None,
+    },
+    CommandSpec {
+        id: CommandId::Models,
+        name: "models",
+        aliases: &["modeles"],
+        arg: Arg::None,
+        description: "Modèles téléchargés sur cette machine",
+        shortcut: None,
+        legacy_shortcut: None,
+    },
+    CommandSpec {
+        id: CommandId::RmModel,
+        name: "rm",
+        aliases: &[],
+        arg: Arg::Required("<dépôt> <fichier>"),
+        description: "Supprimer un modèle téléchargé",
         shortcut: None,
         legacy_shortcut: None,
     },
@@ -473,7 +503,7 @@ mod tests {
         );
         assert_eq!(
             names(&suggestions("/m")),
-            vec!["model", "mcp", "edit"],
+            vec!["model", "models", "mcp", "edit"],
             "edit via its « modifier » alias"
         );
         assert_eq!(names(&suggestions("/h")), vec!["history", "help"]);
@@ -486,7 +516,7 @@ mod tests {
             vec!["add", "help"],
             "help via its « aide » alias"
         );
-        assert_eq!(names(&suggestions("/p")), vec!["prompt", "persona"]);
+        assert_eq!(names(&suggestions("/p")), vec!["prompt", "pull", "persona"]);
         assert_eq!(
             names(&suggestions("/ex")),
             vec!["export", "quit"],
@@ -512,7 +542,9 @@ mod tests {
         );
         assert_eq!(
             names(&search("/mod")),
-            vec!["model", "prompt", "tools", "edit", "retry", "compare"],
+            vec![
+                "model", "prompt", "pull", "models", "rm", "tools", "edit", "retry", "compare"
+            ],
             "« modèle » in a description"
         );
         assert_eq!(search("").len(), COMMANDS.len());

@@ -39,6 +39,8 @@ struct Harness {
     /// Database file shared by the store and the indexer (`None`: in-memory store).
     database: Option<std::path::PathBuf>,
     index_cancel: Option<CancellationToken>,
+    /// Download effects the app asked for (no HTTP runs in the harness).
+    pulls: Vec<Effect>,
 }
 
 impl Harness {
@@ -67,6 +69,7 @@ impl Harness {
             store: Store::open_in_memory().expect("in-memory store"),
             database: None,
             index_cancel: None,
+            pulls: Vec::new(),
         }
     }
 
@@ -162,6 +165,11 @@ impl Harness {
                     if let Some(token) = self.index_cancel.take() {
                         token.cancel();
                     }
+                }
+                // The download tests drive the events in by hand, so the harness only
+                // records what the app asked for; no HTTP ever runs here.
+                Effect::ListGguf { .. } | Effect::StartPull { .. } | Effect::CancelPull => {
+                    self.pulls.push(effect);
                 }
                 Effect::CancelCompletion(_) => {
                     if let Some(token) = self.cancel.take() {
@@ -1094,5 +1102,244 @@ async fn the_model_reads_a_file_once_allowed() {
             .messages
             .iter()
             .any(|m| m.content.starts_with("[outil : lire "))
+    );
+}
+
+/// Types `text` into the input and submits it, returning the effects it produced.
+fn submit(app: &mut App, text: &str) -> Vec<Effect> {
+    for c in text.chars() {
+        app.update(Action::Edit(KeyEvent::new(
+            KeyCode::Char(c),
+            KeyModifiers::NONE,
+        )));
+    }
+    app.update(Action::Submit)
+}
+
+#[tokio::test]
+async fn pull_lists_the_files_then_downloads_the_chosen_one() {
+    let mut harness = Harness::new(Arc::new(MockLlmClient::new(Vec::new())));
+
+    let effects = submit(&mut harness.app, "/pull owner/name");
+
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, Effect::ListGguf { repo, .. } if repo == "owner/name")),
+        "{effects:?}"
+    );
+
+    let files = vec![chatatui::models::hub::RemoteFile {
+        path: "m-Q4_K_M.gguf".to_owned(),
+        bytes: 4_000_000_000,
+        sha256: Some("abc".to_owned()),
+    }];
+    harness.app.update(Action::GgufFiles {
+        repo: "owner/name".to_owned(),
+        result: Ok(files),
+    });
+
+    assert!(matches!(harness.app.overlay, Some(Overlay::GgufPicker(_))));
+
+    let effects = harness.app.update(Action::OverlaySelect);
+
+    assert!(
+        effects.iter().any(|e| matches!(
+            e,
+            Effect::StartPull { repo, file, .. }
+                if repo == "owner/name" && file.path == "m-Q4_K_M.gguf"
+        )),
+        "{effects:?}"
+    );
+    assert!(harness.app.overlay.is_none(), "the picker closes on Enter");
+}
+
+/// A pasted `/tree/<rev>` URL must download that revision, not `main` recorded as `main`.
+#[tokio::test]
+async fn a_pasted_revision_is_carried_to_the_download() {
+    let mut harness = Harness::new(Arc::new(MockLlmClient::new(Vec::new())));
+
+    let effects = submit(
+        &mut harness.app,
+        "/pull https://huggingface.co/owner/name/tree/v2.0",
+    );
+
+    assert!(
+        effects.iter().any(|e| matches!(
+            e,
+            Effect::ListGguf { repo, revision }
+                if repo == "owner/name" && revision.as_deref() == Some("v2.0")
+        )),
+        "{effects:?}"
+    );
+
+    harness.app.update(Action::GgufFiles {
+        repo: "owner/name".to_owned(),
+        result: Ok(vec![chatatui::models::hub::RemoteFile {
+            path: "m-Q4_K_M.gguf".to_owned(),
+            bytes: 10,
+            sha256: None,
+        }]),
+    });
+    let effects = harness.app.update(Action::OverlaySelect);
+
+    assert!(
+        effects.iter().any(|e| matches!(
+            e,
+            Effect::StartPull { revision, .. } if revision.as_deref() == Some("v2.0")
+        )),
+        "{effects:?}"
+    );
+}
+
+/// Without a revision in the URL, the runtime's default is used.
+#[tokio::test]
+async fn a_plain_repository_names_no_revision() {
+    let mut harness = Harness::new(Arc::new(MockLlmClient::new(Vec::new())));
+
+    let effects = submit(&mut harness.app, "/pull owner/name");
+
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, Effect::ListGguf { revision, .. } if revision.is_none())),
+        "{effects:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_repository_without_gguf_says_so_instead_of_opening_an_empty_picker() {
+    let mut harness = Harness::new(Arc::new(MockLlmClient::new(Vec::new())));
+
+    submit(&mut harness.app, "/pull owner/name");
+    harness.app.update(Action::GgufFiles {
+        repo: "owner/name".to_owned(),
+        result: Ok(Vec::new()),
+    });
+
+    assert!(harness.app.overlay.is_none());
+    assert!(
+        matches!(&harness.app.status, Status::Error(message) if message.contains("gguf")
+            || message.contains("GGUF")),
+        "{:?}",
+        harness.app.status
+    );
+}
+
+#[tokio::test]
+async fn a_second_pull_is_refused_while_one_runs() {
+    let mut harness = Harness::new(Arc::new(MockLlmClient::new(Vec::new())));
+    harness.app.update(Action::Pull(
+        chatatui::models::download::PullEvent::Progress {
+            repo: "owner/name".to_owned(),
+            file: "m.gguf".to_owned(),
+            done: 10,
+            total: Some(100),
+            rate: 5,
+        },
+    ));
+
+    let effects = submit(&mut harness.app, "/pull other/name");
+
+    assert!(
+        !effects.iter().any(|e| matches!(e, Effect::ListGguf { .. })),
+        "{effects:?}"
+    );
+    assert!(matches!(harness.app.status, Status::Error(_)));
+}
+
+/// The picker is a second way into the download, and it must be refused just like a second
+/// `/pull`: starting one leaves the running job's cancellation token with no owner, so Esc
+/// and quitting stop nothing.
+#[tokio::test]
+async fn the_picker_cannot_start_a_second_download() {
+    let mut harness = Harness::new(Arc::new(MockLlmClient::new(Vec::new())));
+    // A listing asked for before the running download arrives late and opens the picker.
+    submit(&mut harness.app, "/pull other/name");
+    harness.app.update(Action::Pull(
+        chatatui::models::download::PullEvent::Progress {
+            repo: "owner/name".to_owned(),
+            file: "m.gguf".to_owned(),
+            done: 10,
+            total: Some(100),
+            rate: 5,
+        },
+    ));
+    harness.app.update(Action::GgufFiles {
+        repo: "other/name".to_owned(),
+        result: Ok(vec![chatatui::models::hub::RemoteFile {
+            path: "other-Q4_K_M.gguf".to_owned(),
+            bytes: 10,
+            sha256: None,
+        }]),
+    });
+    assert!(matches!(harness.app.overlay, Some(Overlay::GgufPicker(_))));
+
+    let effects = harness.app.update(Action::OverlaySelect);
+
+    assert!(
+        !effects
+            .iter()
+            .any(|e| matches!(e, Effect::StartPull { .. })),
+        "{effects:?}"
+    );
+    assert!(matches!(harness.app.status, Status::Error(_)));
+    // The running download is untouched.
+    assert_eq!(
+        harness.app.pulling.as_ref().map(|p| p.file.clone()),
+        Some("m.gguf".to_owned())
+    );
+}
+
+#[tokio::test]
+async fn esc_cancels_the_download_when_no_overlay_is_open() {
+    let mut harness = Harness::new(Arc::new(MockLlmClient::new(Vec::new())));
+    harness.app.update(Action::Pull(
+        chatatui::models::download::PullEvent::Progress {
+            repo: "owner/name".to_owned(),
+            file: "m.gguf".to_owned(),
+            done: 10,
+            total: Some(100),
+            rate: 5,
+        },
+    ));
+
+    let effects = harness.app.update(Action::Cancel);
+
+    assert!(
+        effects.iter().any(|e| matches!(e, Effect::CancelPull)),
+        "{effects:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_finished_pull_records_the_model_and_refreshes_the_list() {
+    let mut harness = Harness::new(Arc::new(MockLlmClient::new(Vec::new())));
+    let model = chatatui::models::store::LocalModel {
+        repo: "owner/name".to_owned(),
+        revision: "main".to_owned(),
+        file: "m-Q4_K_M.gguf".to_owned(),
+        path: "/models/owner/name/m-Q4_K_M.gguf".to_owned(),
+        bytes: 4_000_000_000,
+        sha256: Some("abc".to_owned()),
+        architecture: Some("qwen2".to_owned()),
+        quantization: Some("Q4_K_M".to_owned()),
+        context_length: Some(32768),
+        parameters: Some(7_615_616_512),
+        downloaded_at: 1_760_000_000,
+    };
+
+    let effects = harness.app.update(Action::Pull(
+        chatatui::models::download::PullEvent::Finished(Box::new(model)),
+    ));
+
+    assert!(harness.app.pulling.is_none());
+    assert!(matches!(harness.app.status, Status::Info(_)));
+    assert!(
+        effects.iter().any(|e| matches!(
+            e,
+            Effect::Store(chatatui::storage::StoreRequest::ListModels)
+        )),
+        "{effects:?}"
     );
 }

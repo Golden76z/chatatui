@@ -131,6 +131,10 @@ pub enum StoreRequest {
     ListCollections,
     /// Delete a document collection's index (`/forget`).
     DeleteCollection(String),
+    /// List downloaded models.
+    ListModels,
+    /// Delete a downloaded model: its row and its file.
+    DeleteModel { repo: String, file: String },
 }
 
 /// Results reported by the storage worker.
@@ -164,6 +168,16 @@ pub enum StoreEvent {
     Collections {
         collections: Vec<crate::rag::store::CollectionSummary>,
         now: i64,
+    },
+    /// Downloaded models, listed at `now` (Unix seconds).
+    Models {
+        models: Vec<crate::models::store::LocalModel>,
+        now: i64,
+    },
+    /// Result of [`StoreRequest::DeleteModel`]: `found` is `false` if there was none.
+    ModelDeleted {
+        file: String,
+        found: bool,
     },
     /// User-facing error message.
     Error(String),
@@ -284,6 +298,21 @@ impl Store {
                     Some(StoreEvent::Collections {
                         collections,
                         now: now(),
+                    })
+                })
+            }
+            StoreRequest::ListModels => crate::models::store::list(&self.conn)
+                .map(|models| Some(StoreEvent::Models { models, now: now() })),
+            StoreRequest::DeleteModel { repo, file } => {
+                crate::models::store::delete(&self.conn, &repo, &file).map(|deleted| {
+                    // An already-missing file is not a failure: the goal is that nothing
+                    // is left behind.
+                    if let Some(model) = &deleted {
+                        let _ = std::fs::remove_file(&model.path);
+                    }
+                    Some(StoreEvent::ModelDeleted {
+                        file,
+                        found: deleted.is_some(),
                     })
                 })
             }
@@ -760,6 +789,60 @@ mod tests {
 
     fn store() -> Store {
         Store::open_in_memory().expect("in-memory store")
+    }
+
+    #[test]
+    fn models_are_listed_and_deleted_with_their_file() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("m.gguf");
+        std::fs::write(&path, b"gguf").expect("write");
+        let mut store = store();
+        let model = crate::models::store::LocalModel {
+            repo: "owner/name".into(),
+            revision: "main".into(),
+            file: "m.gguf".into(),
+            path: path.display().to_string(),
+            bytes: 4,
+            sha256: None,
+            architecture: None,
+            quantization: Some("Q4_K_M".into()),
+            context_length: None,
+            parameters: None,
+            downloaded_at: 1,
+        };
+        crate::models::store::save(&store.conn, &model).expect("save");
+
+        let listed = store.handle(StoreRequest::ListModels);
+        assert!(
+            matches!(&listed, Some(StoreEvent::Models { models, .. }) if models == &[model]),
+            "{listed:?}"
+        );
+
+        let deleted = store.handle(StoreRequest::DeleteModel {
+            repo: "owner/name".into(),
+            file: "m.gguf".into(),
+        });
+        assert_eq!(
+            deleted,
+            Some(StoreEvent::ModelDeleted {
+                file: "m.gguf".into(),
+                found: true,
+            })
+        );
+        assert!(!path.exists(), "the file is removed too");
+
+        let again = store.handle(StoreRequest::DeleteModel {
+            repo: "owner/name".into(),
+            file: "m.gguf".into(),
+        });
+        assert_eq!(
+            again,
+            Some(StoreEvent::ModelDeleted {
+                file: "m.gguf".into(),
+                found: false,
+            }),
+            "deleting an unknown model is not an error"
+        );
     }
 
     #[test]

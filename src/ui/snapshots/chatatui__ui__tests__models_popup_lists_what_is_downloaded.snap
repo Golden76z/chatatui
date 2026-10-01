@@ -1,0 +1,27 @@
+---
+source: src/ui/mod.rs
+assertion_line: 636
+expression: "draw(&mut app, 80, 22).backend()"
+---
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"  ╭ Modèles ─────────────────────────────────────────────────────────────────╮  "
+"  │ unsloth/Qwen3-0.6B-GGUF  il y a 2 h                                      │  "
+"  │   Qwen3-0.6B-Q4_K_M.gguf                                                 │  "
+"  │   Q4_K_M · 397 Mo · qwen3 · 40 960 tokens · 596 000 000 paramètres       │  "
+"  │                                                                          │  "
+"  │ bartowski/Mistral-7B-GGUF  il y a 3 j  ⚠ non vérifié                     │  "
+"  │   Mistral-7B-Q8_0.gguf                                                   │  "
+"  │   Q8_0 · 7,2 Go · llama · 32 768 tokens                                  │  "
+"  │                                                                          │  "
+"  │ /pull <dépôt> [fichier] télécharge · /models cette liste · /rm <dépôt>   │  "
+"  │ <fichier> supprime le fichier                                            │  "
+"  │ Les modèles locaux ne sont pas encore utilisables pour répondre (J33) :  │  "
+"  │ ce jalon télécharge et inspecte les fichiers, il ne les exécute pas.     │  "
+"  ╰──────────────────────────────────────────────────────────── Échap fermer ╯  "
+"╭ Message ─────────────────────────────────────────────────────────────────────╮"
+"│ Écrivez votre message…                                                       │"
+"╰──────────────────────────────────────────────────────────────────────────────╯"
+" ● Prêt │ Ollama › llama3.2                 ↑↓ PgUp PgDn défiler · Échap fermer "

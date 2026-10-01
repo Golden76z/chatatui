@@ -27,6 +27,7 @@ reqwest = { version = "0.13.5", features = ["json", "stream"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+sha2 = "0.10"
 syntect = { version = "5.3.0", default-features = false, features = ["default-syntaxes", "default-themes", "parsing", "regex-fancy"] }
 thiserror = "2.0"
 tokio = { version = "1.53", features = ["full"] }

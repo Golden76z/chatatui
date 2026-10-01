@@ -23,6 +23,9 @@ Claude is reached through the native Anthropic Messages API.
 - Answers from your documents (RAG): index folders of Markdown, text, source code, PDF,
   Word and LibreOffice files (`/index`), pick a collection per conversation (`/rag`), and
   replies list the passages they cite
+- Local model store: download a GGUF from HuggingFace (`/pull`), read its metadata and
+  list what is on disk (`/models`) — downloading and inspecting only, running them comes
+  later
 - Configurable system prompt; network errors shown in the UI, never a crash
 
 ## Install
@@ -249,6 +252,47 @@ the others, and the popup warns that a server's tool may also change or send dat
 the built-in ones, which only read). `~` is expanded in `command`, `args` and `cwd`. The
 servers stop with chatatui.
 
+### Local models
+
+`/pull <dépôt> [fichier]` downloads a GGUF file from HuggingFace. The repository is
+written `owner/name`, but a pasted page URL works too:
+
+```
+/pull unsloth/Qwen3-0.6B-GGUF
+/pull https://huggingface.co/unsloth/Qwen3-0.6B-GGUF
+/pull unsloth/Qwen3-0.6B-GGUF Qwen3-0.6B-Q4_K_M.gguf
+```
+
+A URL that names a branch or a commit (`.../tree/v2.0`, `.../blob/v2.0/m.gguf`) downloads
+that revision rather than the default branch. Models split across several files
+(`-00001-of-00002.gguf`) are not supported, and `/pull` says so instead of reporting an
+empty repository.
+
+Without a file name, a popup lists the repository's `.gguf` files, smallest first (type to
+filter, `Enter` downloads). The status bar shows the progress and the rate; `Esc` stops the
+download, and running the same `/pull` again resumes it from where it stopped instead of
+starting over. When HuggingFace publishes a checksum, the finished file is verified against
+it; when it does not, the model is listed as `⚠ non vérifié`.
+
+`/models` lists what is on disk, with what the file's own header says: quantization, size,
+architecture, context window and parameter count. `/rm <dépôt> <fichier>` deletes one file
+and its inventory row.
+
+```toml
+[models]
+dir = "~/modeles"      # default: <data>/models, next to the database
+token_env = "HF_TOKEN" # environment variable holding a token, for gated repositories
+```
+
+Files are kept in `~/.local/share/chatatui/models/<owner>/<nom>/<fichier>.gguf` (macOS:
+next to the configuration; Windows: `%APPDATA%\chatatui\data\models`), beside a `.part`
+file while the download is in progress. The token, like the provider API keys, is read by
+the runtime and never reaches the UI.
+
+**A downloaded model cannot answer yet.** This milestone downloads and inspects GGUF
+files; it does not run them. To talk to a local model today, serve it with Ollama or
+llama.cpp and point a provider at it.
+
 ## Commands
 
 Type `/` in the input to see the commands (↑↓ to choose, `Tab` to complete, `Enter` to
@@ -279,6 +323,9 @@ run), or press `Ctrl+P` for the palette:
 | `/collections` | Indexed collections, and the result of the last `/index` |
 | `/rag [collection,…\|off]` | Answer from one or more collections of documents (per conversation), or stop |
 | `/forget <collection>` | Delete a collection's index (run twice to confirm); files are not touched |
+| `/pull <dépôt> [fichier]` | Download a GGUF model from HuggingFace (a repository, or a pasted page URL); without a file name, pick one from the repository's list. `Esc` stops it, the same `/pull` resumes it |
+| `/models` | Models downloaded on this machine, with the metadata read from their header |
+| `/rm <dépôt> <fichier>` | Delete a downloaded model (the file and its inventory row) |
 | `/help` | Commands and key bindings (`F1`) |
 | `/quit` | Quit (`Ctrl+C`) |
 
@@ -290,7 +337,7 @@ Start a message with `//` to send text that begins with a slash.
 |---|---|
 | `Enter` | Send |
 | `Shift+Enter` / `Alt+Enter` / `Ctrl+J` | New line (`Shift+Enter` needs the kitty keyboard protocol) |
-| `Esc` | Close the popup or panel, otherwise cancel the running generation, otherwise stop indexing |
+| `Esc` | Close the popup or panel, otherwise cancel the running generation, otherwise stop indexing, otherwise stop a download |
 | `Ctrl+N` | New conversation |
 | `Ctrl+L` | Conversation list: `↑`/`↓` to choose (the highlighted conversation is previewed; while searching, from its first match; `PgUp`/`PgDn` scroll it), `Enter` to open, type to search every message (accents and case ignored), `Ctrl+R` to rename, `Suppr` twice to delete, `Esc` clears the search then closes |
 | `Ctrl+M` / `F2` | Choose the model (type to filter). `Ctrl+M` needs the kitty keyboard protocol |
@@ -333,6 +380,9 @@ ui::render(&App, frame)                   read-only
   (`indexer.rs`, cancellable, reports progress as events) and `RagContext`
   (`retrieve.rs`), the `ContextProvider` that searches the conversation's collection. The
   streaming task reports the passages it used, which become the reply's citations.
+- `models/`: the HuggingFace client (`hub.rs`), the GGUF header parser (`gguf.rs`), the
+  inventory of downloaded models (`store.rs`) and the cancellable, resumable download job
+  (`download.rs`, reports progress as events). Nothing here runs a model.
 - `markdown/` + `transcript.rs`: markdown → wrapped lines, cached per message and width;
   while streaming only the last message is re-rendered, at most once per tick.
 - `storage/`: SQLite schema with migrations, and a worker thread that runs requests in

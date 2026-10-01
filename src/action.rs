@@ -115,6 +115,13 @@ pub enum Action {
     },
     /// Progress of the indexing job.
     Index(IndexEvent),
+    /// A repository's GGUF files, or why they could not be listed.
+    GgufFiles {
+        repo: String,
+        result: Result<Vec<crate::models::hub::RemoteFile>, String>,
+    },
+    /// Progress of the download job.
+    Pull(crate::models::download::PullEvent),
     /// How the collections' folders differ from their index.
     CollectionsChecked(Result<Vec<Staleness>, String>),
     /// A key that is not a shortcut, forwarded to the text input.
@@ -194,6 +201,21 @@ pub enum Effect {
     },
     /// Stop the running indexing job.
     CancelIndex,
+    /// List a HuggingFace repository's GGUF files, to choose one.
+    ListGguf {
+        repo: String,
+        /// Branch or commit asked for; `None` means the Hub's default branch.
+        revision: Option<String>,
+    },
+    /// Download one of a repository's GGUF files.
+    StartPull {
+        repo: String,
+        /// Branch or commit asked for; `None` means the Hub's default branch.
+        revision: Option<String>,
+        file: crate::models::hub::RemoteFile,
+    },
+    /// Stop the running download (the partial file is kept, so it can resume).
+    CancelPull,
     /// Tell the streaming task whether the pending tool call may run.
     ToolDecision { request_id: RequestId, allow: bool },
     /// Compare the collections' folders with their index.

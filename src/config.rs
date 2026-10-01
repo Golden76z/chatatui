@@ -80,6 +80,13 @@ auto_compact = false
 #                          # (also Text Embeddings Inference, Infinity); model optional
 # rerank_candidates = 20   # passages re-scored before keeping top_k
 
+# Modèles téléchargés depuis HuggingFace (/pull, /models).
+# [models]
+# Dossier des modèles (défaut : à côté de la base de données).
+# dir = ""
+# Variable d'environnement contenant un jeton HuggingFace, pour les dépôts restreints.
+# token_env = "HF_TOKEN"
+
 # Providers. "ollama", "openai" (ChatGPT) and "claude" are predefined: the sections below
 # only override their settings. Add your own OpenAI-compatible server the same way, e.g.
 #   [providers.lmstudio]
@@ -365,6 +372,8 @@ pub struct Config {
     pub prompts: BTreeMap<String, String>,
     /// `[rag]` section: document search settings.
     pub rag: crate::rag::RagConfig,
+    /// `[models]` section: where downloaded models live.
+    pub models: crate::models::ModelsConfig,
     /// `[providers.*]` sections; absent means none (not the default `ollama` section), so
     /// that the legacy top-level keys below still apply.
     #[serde(default)]
@@ -397,6 +406,7 @@ impl Default for Config {
             mcp: BTreeMap::new(),
             prompts: BTreeMap::new(),
             rag: crate::rag::RagConfig::default(),
+            models: crate::models::ModelsConfig::default(),
             providers: BTreeMap::from([("ollama".to_owned(), ollama)]),
             base_url: None,
             model: None,
@@ -561,6 +571,14 @@ mod tests {
     fn default_file_matches_default_struct() {
         let parsed = Config::from_toml(DEFAULT_CONFIG_TOML).expect("default config parses");
         assert_eq!(parsed, Config::default());
+    }
+
+    #[test]
+    fn models_section_is_read() {
+        let config =
+            Config::from_toml("[models]\ndir = \"~/gguf\"\ntoken_env = \"HF\"\n").expect("parses");
+        assert_eq!(config.models.dir, "~/gguf");
+        assert_eq!(config.models.token_env, "HF");
     }
 
     #[test]

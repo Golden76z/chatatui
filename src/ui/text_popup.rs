@@ -1,5 +1,5 @@
 //! Scrollable read-only popups: help (F1), context details (/context), prompt (/prompt),
-//! document collections (/collections).
+//! document collections (/collections), downloaded models (/models).
 //!
 //! Content is built as already-wrapped lines for the popup width, so the number of lines
 //! (and hence the scroll limit) is known exactly — also from `App::update`, through
@@ -15,7 +15,7 @@ use ratatui::{
 
 use crate::{app::App, state::Overlay};
 
-use super::{collections_view, context_view, help, mcp_view, prompt_view};
+use super::{collections_view, context_view, help, mcp_view, models_view, prompt_view};
 
 /// A text popup's content.
 struct TextPopup {
@@ -63,8 +63,13 @@ fn content(app: &App, overlay: &Overlay, inner_width: usize) -> Option<TextPopup
             title: " Serveurs MCP ",
             lines: mcp_view::lines(app, inner_width),
         }),
+        Overlay::Models { .. } => Some(TextPopup {
+            title: " Modèles ",
+            lines: models_view::lines(app, inner_width),
+        }),
         Overlay::ModelPicker(_)
         | Overlay::Palette(_)
+        | Overlay::GgufPicker(_)
         | Overlay::ToolConfirm { .. }
         | Overlay::Compare { .. } => None,
     }
@@ -106,9 +111,11 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
         | Overlay::Context { scroll }
         | Overlay::Prompt { scroll }
         | Overlay::Collections { scroll }
-        | Overlay::Mcp { scroll } => *scroll,
+        | Overlay::Mcp { scroll }
+        | Overlay::Models { scroll } => *scroll,
         Overlay::ModelPicker(_)
         | Overlay::Palette(_)
+        | Overlay::GgufPicker(_)
         | Overlay::ToolConfirm { .. }
         | Overlay::Compare { .. } => return,
     };

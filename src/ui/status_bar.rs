@@ -44,11 +44,14 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
         ),
         Span::raw(app.model_display()),
     ]);
-    let left = with_indexing(
+    let left = with_pull(
         app,
-        with_rag(
+        with_indexing(
             app,
-            with_cost(app, with_gauge(app, with_persona(app, left))),
+            with_rag(
+                app,
+                with_cost(app, with_gauge(app, with_persona(app, left))),
+            ),
         ),
     );
 
@@ -180,6 +183,39 @@ fn with_indexing(app: &App, mut line: Line<'static>) -> Line<'static> {
     line
 }
 
+/// Appends the download progress (`⬇ Q4_K_M 2,1/4,4 Go · 18 Mo/s`) while `/pull` runs.
+fn with_pull(app: &App, mut line: Line<'static>) -> Line<'static> {
+    let Some(progress) = &app.pulling else {
+        return line;
+    };
+    let done = tokens::format_bytes(progress.done);
+    let size = match progress.total {
+        Some(total) => {
+            let total = tokens::format_bytes(total);
+            // `2,0/4,1 Go`, not `2,0 Go/4,1 Go`, when both land on the same unit.
+            match (done.rsplit_once(' '), total.rsplit_once(' ')) {
+                (Some((value, unit)), Some((_, total_unit))) if unit == total_unit => {
+                    format!("{value}/{total}")
+                }
+                _ => format!("{done}/{total}"),
+            }
+        }
+        None => done,
+    };
+    let rate = if progress.rate > 0 {
+        format!(" · {}/s", tokens::format_bytes(progress.rate))
+    } else {
+        String::new()
+    };
+    // The file name carries the quantization, which is what the user is waiting on.
+    let name = progress.file.trim_end_matches(".gguf").to_owned();
+    line.push_span(Span::styled(
+        format!("  ⬇ {name} {size}{rate}"),
+        Style::default().fg(crate::theme::palette().info),
+    ));
+    line
+}
+
 /// Hints for the current context, most complete first.
 fn hint_candidates(app: &App) -> Vec<String> {
     let newline_key = if app.keyboard_enhanced {
@@ -200,7 +236,7 @@ fn hint_candidates(app: &App) -> Vec<String> {
                 "Échap fermer ".into(),
             ];
         }
-        Some(Overlay::ModelPicker(_) | Overlay::Palette(_)) => {
+        Some(Overlay::ModelPicker(_) | Overlay::Palette(_) | Overlay::GgufPicker(_)) => {
             return vec![
                 "↑↓ choisir · Entrée valider · Échap fermer ".into(),
                 "Échap fermer ".into(),
@@ -211,7 +247,8 @@ fn hint_candidates(app: &App) -> Vec<String> {
             | Overlay::Context { .. }
             | Overlay::Prompt { .. }
             | Overlay::Collections { .. }
-            | Overlay::Mcp { .. },
+            | Overlay::Mcp { .. }
+            | Overlay::Models { .. },
         ) => {
             return vec![
                 "↑↓ PgUp PgDn défiler · Échap fermer ".into(),
@@ -264,9 +301,97 @@ fn hint_candidates(app: &App) -> Vec<String> {
             "Échap arrêter ".into(),
         ];
     }
+    if app.pulling.is_some() && app.input.is_empty() {
+        return vec![
+            "Échap arrêter le téléchargement · /models détails ".into(),
+            "Échap arrêter ".into(),
+        ];
+    }
     vec![
         format!("Entrée envoyer · {newline_key} ligne · / commandes · Ctrl+P palette · F1 aide "),
         "Entrée envoyer · / commandes · Ctrl+P palette ".into(),
         "/ commandes · Ctrl+P ".into(),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use ratatui::{Terminal, backend::TestBackend};
+
+    use super::*;
+    use crate::config::Config;
+
+    fn test_app() -> App {
+        App::new(&Config::default(), false)
+    }
+
+    /// The whole bar drawn on one row of `width` columns, as plain text.
+    fn line_text(app: &App, width: u16) -> String {
+        let mut terminal =
+            Terminal::new(TestBackend::new(width, 1)).expect("test backend never fails");
+        terminal
+            .draw(|frame| render(app, frame, frame.area()))
+            .expect("test backend never fails");
+        let buffer = terminal.backend().buffer().clone();
+        (0..width)
+            .map(|x| buffer[(x, 0)].symbol().to_owned())
+            .collect()
+    }
+
+    #[test]
+    fn shows_the_download_progress_and_its_rate() {
+        let mut app = test_app();
+        app.pulling = Some(crate::app::PullProgress {
+            repo: "bartowski/Qwen2.5-7B-Instruct-GGUF".to_owned(),
+            file: "Qwen2.5-7B-Instruct-Q4_K_M.gguf".to_owned(),
+            done: 2_100_000_000,
+            total: Some(4_400_000_000),
+            rate: 18_000_000,
+        });
+
+        let text = line_text(&app, 120);
+
+        assert!(text.contains('⬇'), "{text}");
+        assert!(text.contains("Q4_K_M"), "{text}");
+        assert!(text.contains("2,0/4,1 Go"), "{text}");
+        assert!(text.contains("/s"), "{text}");
+    }
+
+    #[test]
+    fn a_download_of_unknown_size_shows_what_it_has() {
+        let mut app = test_app();
+        app.pulling = Some(crate::app::PullProgress {
+            repo: "owner/name".to_owned(),
+            file: "m.gguf".to_owned(),
+            done: 1_048_576,
+            total: None,
+            rate: 0,
+        });
+
+        let text = line_text(&app, 120);
+
+        assert!(text.contains("1,0 Mo"), "{text}");
+        // No total, so no percentage and no bogus denominator.
+        assert!(!text.contains('%'), "{text}");
+        // No rate yet: no trailing separator dangling on its own.
+        assert!(!text.contains("· /s"), "{text}");
+    }
+
+    #[test]
+    fn a_running_download_advertises_how_to_stop_it() {
+        let mut app = test_app();
+        app.pulling = Some(crate::app::PullProgress {
+            repo: "owner/name".to_owned(),
+            file: "m.gguf".to_owned(),
+            done: 0,
+            total: None,
+            rate: 0,
+        });
+
+        assert!(
+            hint_candidates(&app)[0].contains("Échap arrêter le téléchargement"),
+            "{:?}",
+            hint_candidates(&app)
+        );
+    }
 }

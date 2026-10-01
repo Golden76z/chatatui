@@ -61,6 +61,22 @@ pub fn format_short(n: u64) -> String {
     }
 }
 
+/// A byte count for the UI: `4,4 Go`, `812 Mo`, `96 ko`.
+pub fn format_bytes(bytes: u64) -> String {
+    const UNITS: [(&str, u64); 3] = [("Go", 1 << 30), ("Mo", 1 << 20), ("ko", 1 << 10)];
+    for (unit, scale) in UNITS {
+        if bytes >= scale {
+            let value = bytes as f64 / scale as f64;
+            return if value < 10.0 {
+                format!("{value:.1} {unit}").replace('.', ",")
+            } else {
+                format!("{} {unit}", value.round() as u64)
+            };
+        }
+    }
+    format!("{bytes} o")
+}
+
 /// Share of `used` in `total`, in percent (0 when `total` is 0).
 pub fn percent(used: u64, total: u64) -> u64 {
     used.saturating_mul(100).checked_div(total).unwrap_or(0)
@@ -97,5 +113,17 @@ mod tests {
         assert_eq!(format_short(1_048_576), "1,0M");
         assert_eq!(percent(50, 200), 25);
         assert_eq!(percent(5, 0), 0);
+    }
+
+    #[test]
+    fn byte_counts_read_like_a_file_manager() {
+        assert_eq!(format_bytes(0), "0 o");
+        assert_eq!(format_bytes(1_023), "1023 o");
+        assert_eq!(format_bytes(1_024), "1,0 ko");
+        assert_eq!(format_bytes(98_304), "96 ko");
+        assert_eq!(format_bytes(512 * (1 << 20)), "512 Mo");
+        assert_eq!(format_bytes(4_724_464_025), "4,4 Go");
+        // No panic and no overflow at the top of the range.
+        assert!(format_bytes(u64::MAX).ends_with(" Go"));
     }
 }

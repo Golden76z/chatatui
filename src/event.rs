@@ -45,6 +45,13 @@ pub enum AppEvent {
     Models(Vec<ProviderModels>),
     /// Progress of the indexing job.
     Index(IndexEvent),
+    /// GGUF files offered by a repository (`/pull <repo>`).
+    GgufFiles {
+        repo: String,
+        result: Result<Vec<crate::models::hub::RemoteFile>, String>,
+    },
+    /// Progress of the download job.
+    Pull(crate::models::download::PullEvent),
     /// Result of [`crate::action::Effect::CheckCollections`].
     CollectionsChecked(Result<Vec<crate::rag::indexer::Staleness>, String>),
     /// A file to attach was read.

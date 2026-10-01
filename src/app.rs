@@ -32,6 +32,7 @@ use crate::{
         ChatMessage, LlmEvent, RequestId, Usage,
         stream_task::{CompletionJob, JobKind},
     },
+    models::{download::PullEvent, hub::RemoteFile, store::LocalModel},
     prompt,
     rag::{
         RagConfig,
@@ -39,8 +40,8 @@ use crate::{
         store::CollectionSummary,
     },
     state::{
-        Citation, Conversation, Find, MessageId, MessageStatus, ModelPicker, Overlay, Palette,
-        Role, ScrollState, Sidebar, Status,
+        Citation, Conversation, Find, GgufPicker, MessageId, MessageStatus, ModelPicker, Overlay,
+        Palette, Role, ScrollState, Sidebar, Status,
     },
     storage::{
         ConversationId, ConversationRecord, StoreEvent, StoreRequest, StoredConversation, Tail,
@@ -234,6 +235,18 @@ pub struct IndexProgress {
     pub current: String,
 }
 
+/// Progress of the running download.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PullProgress {
+    pub repo: String,
+    pub file: String,
+    pub done: u64,
+    /// Total size; `None` until the server says.
+    pub total: Option<u64>,
+    /// Bytes per second since the download started.
+    pub rate: u64,
+}
+
 /// How fast a reply was generated.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Speed {
@@ -338,6 +351,16 @@ pub struct App {
     pub collections: Option<(Vec<CollectionSummary>, i64)>,
     /// The running `/index`, if any.
     pub indexing: Option<IndexProgress>,
+    /// Downloaded models and when they were listed (`None`: not loaded yet).
+    pub models: Option<(Vec<LocalModel>, i64)>,
+    /// The running download, if any.
+    pub pulling: Option<PullProgress>,
+    /// File named on the `/pull` command line, held until the listing comes back and its
+    /// size and checksum are known.
+    wanted_file: Option<String>,
+    /// Revision named by the `/pull` URL, held until the download starts — which may be
+    /// after the picker, long after the command was typed. `None`: the Hub's default branch.
+    wanted_revision: Option<String>,
     /// Report of the last completed `/index` of this session.
     pub last_index: Option<IndexReport>,
     /// Indexing settings (shown in `/collections`).
@@ -443,6 +466,10 @@ impl App {
             measured: None,
             collections: None,
             indexing: None,
+            models: None,
+            pulling: None,
+            wanted_file: None,
+            wanted_revision: None,
             last_index: None,
             rag: config.rag.clone(),
             rag_collection: None,
@@ -879,6 +906,8 @@ impl App {
                     self.cancel_generation()
                 } else if self.indexing.is_some() {
                     vec![Effect::CancelIndex]
+                } else if self.pulling.is_some() {
+                    vec![Effect::CancelPull]
                 } else {
                     Vec::new()
                 }
@@ -902,6 +931,7 @@ impl App {
                 match &mut self.overlay {
                     Some(Overlay::ModelPicker(picker)) => picker.select_previous(),
                     Some(Overlay::Palette(palette)) => palette.select_previous(),
+                    Some(Overlay::GgufPicker(picker)) => picker.move_selection(-1),
                     Some(_) => self.scroll_popup(-1),
                     None => {}
                 }
@@ -911,6 +941,7 @@ impl App {
                 match &mut self.overlay {
                     Some(Overlay::ModelPicker(picker)) => picker.select_next(),
                     Some(Overlay::Palette(palette)) => palette.select_next(),
+                    Some(Overlay::GgufPicker(picker)) => picker.move_selection(1),
                     Some(_) => self.scroll_popup(1),
                     None => {}
                 }
@@ -928,6 +959,7 @@ impl App {
                 match &mut self.overlay {
                     Some(Overlay::ModelPicker(picker)) => picker.push_filter(c),
                     Some(Overlay::Palette(palette)) => palette.push_filter(c),
+                    Some(Overlay::GgufPicker(picker)) => picker.push_filter(c),
                     _ => {}
                 }
                 Vec::new()
@@ -936,12 +968,26 @@ impl App {
                 match &mut self.overlay {
                     Some(Overlay::ModelPicker(picker)) => picker.pop_filter(),
                     Some(Overlay::Palette(palette)) => palette.pop_filter(),
+                    Some(Overlay::GgufPicker(picker)) => picker.pop_filter(),
                     _ => {}
                 }
                 Vec::new()
             }
             Action::OverlaySelect => match &self.overlay {
                 Some(Overlay::ModelPicker(_)) => self.select_model(),
+                Some(Overlay::GgufPicker(picker)) => {
+                    let chosen = picker
+                        .selected()
+                        .cloned()
+                        .map(|file| (picker.repo.clone(), file));
+                    match chosen {
+                        Some((repo, file)) => {
+                            self.overlay = None;
+                            self.begin_pull(repo, file)
+                        }
+                        None => Vec::new(),
+                    }
+                }
                 Some(Overlay::Palette(palette)) => {
                     let command = palette.selected_command();
                     self.overlay = None;
@@ -961,6 +1007,7 @@ impl App {
                     | Overlay::Prompt { .. }
                     | Overlay::Collections { .. }
                     | Overlay::Mcp { .. }
+                    | Overlay::Models { .. }
                     | Overlay::Compare { .. },
                 ) => {
                     self.overlay = None;
@@ -1224,6 +1271,8 @@ impl App {
             Action::Llm { request_id, event } => self.on_llm_event(request_id, event),
             Action::Storage(event) => self.on_storage_event(event),
             Action::Index(event) => self.on_index_event(event),
+            Action::GgufFiles { repo, result } => self.on_gguf_files(repo, result),
+            Action::Pull(event) => self.on_pull_event(event),
         }
     }
 
@@ -1298,6 +1347,12 @@ impl App {
             CommandId::Clear => self.clear_context(),
             CommandId::Compact => self.compact(),
             CommandId::Index => self.start_index(arg),
+            CommandId::Pull => self.start_pull(arg.trim()),
+            CommandId::Models => {
+                self.overlay = Some(Overlay::Models { scroll: 0 });
+                vec![Effect::Store(StoreRequest::ListModels)]
+            }
+            CommandId::RmModel => self.remove_model(arg.trim()),
             CommandId::Rag => self.choose_rag(arg.trim()),
             CommandId::Forget => self.forget(arg.trim()),
             CommandId::Rename => self.rename_current(arg.trim()),
@@ -2048,6 +2103,158 @@ impl App {
                 self.index_queue.clear();
                 self.status = Status::Info(format!("indexation de « {collection} » arrêtée"));
                 self.refresh_collections()
+            }
+        }
+    }
+
+    /// Says why a download cannot start now, and shows it. One at a time: a second one would
+    /// leave the first with no way to be stopped, and both would write the same part file.
+    fn refuse_while_pulling(&mut self) -> bool {
+        let Some(progress) = &self.pulling else {
+            return false;
+        };
+        self.status = Status::Error(format!(
+            "téléchargement de « {} » déjà en cours (Échap pour l'arrêter)",
+            progress.file
+        ));
+        true
+    }
+
+    /// `/pull <repo> [file]`: lists a repository's GGUF files, or downloads one directly.
+    fn start_pull(&mut self, arg: &str) -> Vec<Effect> {
+        if self.refuse_while_pulling() {
+            return Vec::new();
+        }
+        let mut words = arg.split_whitespace();
+        let Some(target) = words.next() else {
+            self.status = Status::Error("usage : /pull <propriétaire>/<nom> [fichier.gguf]".into());
+            return Vec::new();
+        };
+        let target = match crate::models::hub::parse_target(target) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                self.status = Status::Error(error.to_string());
+                return Vec::new();
+            }
+        };
+        // A named file still needs its size and checksum, so list first and pick it out of
+        // the answer.
+        self.wanted_file = words.next().map(str::to_owned).or(target.file);
+        // The revision has to outlive the listing: the picker may be answered much later.
+        self.wanted_revision = target.revision;
+        vec![Effect::ListGguf {
+            repo: target.repo,
+            revision: self.wanted_revision.clone(),
+        }]
+    }
+
+    /// The files a repository offers: the one asked for, or the picker.
+    fn on_gguf_files(
+        &mut self,
+        repo: String,
+        result: Result<Vec<RemoteFile>, String>,
+    ) -> Vec<Effect> {
+        let wanted = self.wanted_file.take();
+        let files = match result {
+            Ok(files) => files,
+            Err(error) => {
+                self.status = Status::Error(format!("{repo} : {error}"));
+                return Vec::new();
+            }
+        };
+        if files.is_empty() {
+            self.status = Status::Error(format!("aucun fichier .gguf dans le dépôt {repo}"));
+            return Vec::new();
+        }
+        if let Some(wanted) = wanted {
+            let Some(file) = files.iter().find(|f| f.path == wanted).cloned() else {
+                self.status = Status::Error(format!("{wanted} introuvable dans {repo}"));
+                return Vec::new();
+            };
+            return self.begin_pull(repo, file);
+        }
+        self.overlay = Some(Overlay::GgufPicker(GgufPicker::new(repo, files)));
+        Vec::new()
+    }
+
+    /// Starts the download and shows its progress in the status bar.
+    ///
+    /// Every way into a download goes through here — `/pull owner/name file`, and the picker
+    /// — so this is where one-at-a-time is enforced: a listing asked for before the running
+    /// download started arrives whenever the network answers, long after `/pull` was refused.
+    fn begin_pull(&mut self, repo: String, file: RemoteFile) -> Vec<Effect> {
+        if self.refuse_while_pulling() {
+            return Vec::new();
+        }
+        self.pulling = Some(PullProgress {
+            repo: repo.clone(),
+            file: file.path.clone(),
+            total: (file.bytes > 0).then_some(file.bytes),
+            ..PullProgress::default()
+        });
+        // The status bar shows the progress (and Esc to stop it).
+        self.status = Status::Ready;
+        vec![Effect::StartPull {
+            repo,
+            revision: self.wanted_revision.clone(),
+            file,
+        }]
+    }
+
+    fn on_pull_event(&mut self, event: PullEvent) -> Vec<Effect> {
+        match event {
+            PullEvent::Progress {
+                repo,
+                file,
+                done,
+                total,
+                rate,
+            } => {
+                self.pulling = Some(PullProgress {
+                    repo,
+                    file,
+                    done,
+                    total,
+                    rate,
+                });
+                Vec::new()
+            }
+            PullEvent::Finished(model) => {
+                self.pulling = None;
+                self.status = Status::Info(format!(
+                    "{} téléchargé ({})",
+                    model.file,
+                    tokens::format_bytes(model.bytes)
+                ));
+                vec![Effect::Store(StoreRequest::ListModels)]
+            }
+            PullEvent::Failed { file, error, .. } => {
+                self.pulling = None;
+                self.status = Status::Error(format!("téléchargement de {file} : {error}"));
+                Vec::new()
+            }
+            PullEvent::Cancelled { file, .. } => {
+                self.pulling = None;
+                self.status = Status::Info(format!(
+                    "téléchargement de {file} arrêté (/pull reprendra où il s'est arrêté)"
+                ));
+                Vec::new()
+            }
+        }
+    }
+
+    /// `/rm <repo> <file>`: deletes a downloaded model.
+    fn remove_model(&mut self, arg: &str) -> Vec<Effect> {
+        let mut words = arg.split_whitespace();
+        match (words.next(), words.next(), words.next()) {
+            (Some(repo), Some(file), None) => vec![Effect::Store(StoreRequest::DeleteModel {
+                repo: repo.to_owned(),
+                file: file.to_owned(),
+            })],
+            _ => {
+                self.status =
+                    Status::Error("usage : /rm <propriétaire>/<nom> <fichier.gguf>".into());
+                Vec::new()
             }
         }
     }
@@ -2906,6 +3113,18 @@ impl App {
                     self.retrieved = None;
                 }
                 vec![Effect::Store(StoreRequest::ListCollections)]
+            }
+            StoreEvent::Models { models, now } => {
+                self.models = Some((models, now));
+                Vec::new()
+            }
+            StoreEvent::ModelDeleted { file, found } => {
+                if !found {
+                    self.status = Status::Error(format!("modèle « {file} » introuvable"));
+                    return Vec::new();
+                }
+                self.status = Status::Info(format!("« {file} » supprimé de cette machine"));
+                vec![Effect::Store(StoreRequest::ListModels)]
             }
             StoreEvent::Collections { collections, now } => {
                 let effects = match self.pending_rag.take() {

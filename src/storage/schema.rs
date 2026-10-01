@@ -136,6 +136,24 @@ const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX message_tails_by_conversation ON message_tails (conversation_id);
     "#,
+    // v11: models downloaded from HuggingFace and kept on disk.
+    r#"
+    CREATE TABLE local_models (
+        id             INTEGER PRIMARY KEY,
+        repo           TEXT NOT NULL,
+        revision       TEXT NOT NULL,
+        file           TEXT NOT NULL,
+        path           TEXT NOT NULL,
+        bytes          INTEGER NOT NULL,
+        sha256         TEXT,
+        architecture   TEXT,
+        quantization   TEXT,
+        context_length INTEGER,
+        parameters     INTEGER,
+        downloaded_at  INTEGER NOT NULL
+    );
+    CREATE UNIQUE INDEX local_models_file ON local_models (repo, file);
+    "#,
 ];
 
 /// Latest schema version.
