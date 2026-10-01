@@ -84,13 +84,22 @@ Resume: when a part file exists, send `Range: bytes=<len>-` and append on `206 P
 Content`. A `200 OK` means the server ignored the range, so the part file is truncated
 and the transfer restarts from zero rather than producing a corrupt file.
 
+The file name comes from a remote API, so only a bare name is accepted: anything holding
+a path separator, `..`, or an absolute prefix is refused before it can be joined onto the
+store directory. That one rule also rejects the multi-part GGUF files (`-00001-of-00002`)
+that live in subdirectories, which J32 does not support; the error says so.
+
 Completion: `sync_all`, then an atomic rename into
 `<store>/models/{owner}/{repo}/{file}`. The real directory nesting avoids the name
 collisions a flattened `owner__repo` scheme would allow.
 
 ### Verification
 
-sha256 is computed while writing. At rename time it is compared with `lfs.oid`. When the
+sha256 is computed while writing. A resumed transfer first reads the existing part file
+through the hasher before appending, since the digest covers the whole file and not just
+the new bytes — a couple of seconds of I/O on a large part file, and the only way the
+check means anything after a resume. At rename time the digest is compared with
+`lfs.oid`. When the
 API exposes no oid (a GGUF small enough not to be an LFS file), the model is recorded
 with `sha256 = NULL` and the UI says the file could not be verified — never that it was.
 
@@ -180,11 +189,16 @@ CREATE TABLE local_models (
     parameters     INTEGER,
     downloaded_at  INTEGER NOT NULL
 );
-CREATE UNIQUE INDEX local_models_file ON local_models (repo, revision, file);
+CREATE UNIQUE INDEX local_models_file ON local_models (repo, file);
 ```
 
 `sha256` is `NULL` when the API exposed no oid. The unique index makes re-downloading an
 idempotent upsert, matching how messages are written.
+
+The index is on `(repo, file)` and **not** on `(repo, revision, file)`: the path on disk
+carries no revision, so two revisions of one filename would otherwise own two rows and
+fight over one file. `revision` is recorded as metadata, and pulling another revision of
+a file replaces both the file and the row.
 
 Deleting a model removes the file and the row; a file already gone is not an error, the
 row goes anyway.
@@ -194,13 +208,17 @@ row goes anyway.
 - `/pull <repo> [file]` — without a file, a picker lists the repository's `.gguf` files
   (name, quantization, size) and the chosen one is downloaded; with a file, it is
   downloaded directly.
-- `/models` — an inventory overlay: repository, quantization, size, architecture,
-  context window, and whether the checksum was verified. `Suppr` deletes after a
-  confirmation.
+- `/models` — a read-only inventory overlay: repository, quantization, size,
+  architecture, context window, and whether the checksum was verified.
+- `/rm <repo> <file>` — deletes a downloaded model, file and row. Deletion is a command
+  rather than `Suppr` inside the overlay because `/forget <collection>` already sets that
+  precedent, and it keeps `/models` a plain `OverlayKind::Text` popup like `/collections`
+  instead of needing a new overlay kind.
 - While a download runs the status bar shows `⬇ Qwen2.5-7B Q4_K_M 2,1/4,4 Go · 18 Mo/s`
   and `Esc` cancels — the slot indexing already uses, so nothing new is invented.
-- Two new `Overlay` variants, one shown at a time like every other popup, and `Esc`
-  closes the topmost one before cancelling a download.
+- Two new `Overlay` variants — `Models` (`Text`, scrollable) and `GgufPicker` (`List`,
+  filterable, `Enter` starts the download) — one shown at a time like every other popup.
+  `Esc` closes the topmost one before cancelling a download.
 - Local models are **absent from the `F2` picker** in J32: with no engine they cannot be
   selected, and a greyed-out group would be state with no behaviour. They join it in J33.
 
@@ -253,10 +271,13 @@ Each task ends with `cargo fmt`, `cargo clippy --all-targets -- -D warnings` and
 
 | | Task | Depends on |
 |---|---|---|
-| 1 | `gguf.rs`: parsing and its tests | — |
-| 2 | `hub.rs` + `download.rs`: listing, resumable download, the job | — |
-| 3 | `store.rs` + the v11 migration | — |
-| 4 | UI, commands, runtime wiring, `README` and `docs/roadmap.md` | 1, 2, 3 |
+| 1 | `models/mod.rs` skeleton (`ModelError`, `ModelsConfig`, module declarations) + `gguf.rs` | — |
+| 2 | `hub.rs` + `download.rs`: listing, resumable download, the job | 1 |
+| 3 | `store.rs` + the v11 migration | 1 |
+| 4 | Configuration, commands, state, runtime wiring | 1, 2, 3 |
+| 5 | The two views, the status bar, `README` / `roadmap` / `PLAN` | 4 |
 
-Tasks 1, 2 and 3 touch disjoint files and run in parallel; task 4 follows. One commit
+Task 1 owns `src/models/mod.rs`, so it lands first: were tasks 2 and 3 each to add their own
+`pub mod` line, the two edits would fall in the same region and conflict. With the module
+declared against compiling stubs, tasks 2 and 3 share no file and run at once. One commit
 for the milestone.
