@@ -86,7 +86,8 @@ impl HttpReranker {
         model: &str,
         connect_timeout: Duration,
     ) -> Result<Self, LlmError> {
-        if provider.kind == ProviderKind::Anthropic {
+        // `Local` serves nothing over HTTP: see the same guard in `rag::embed`.
+        if matches!(provider.kind, ProviderKind::Anthropic | ProviderKind::Local) {
             return Err(LlmError::Protocol(format!(
                 "{} ne fournit pas de re-classement : choisissez un autre rerank_provider",
                 provider.label
@@ -265,6 +266,27 @@ impl Reranker for WordReranker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Same fabricated `base_url` as the embedder's: it parses, so `rerank_provider = "local"`
+    /// used to resolve and point a reranker at an address the user never wrote.
+    #[test]
+    fn the_local_engine_does_no_reranking() {
+        let providers = crate::config::Config::default().resolve_providers(|_| None);
+        let local = providers
+            .iter()
+            .find(|p| p.kind == ProviderKind::Local)
+            .expect("the local provider is a preset");
+
+        let error = HttpReranker::new(local, "bge-reranker", Duration::from_secs(1))
+            .expect_err("the local engine only generates replies");
+
+        let text = error.to_string();
+        assert!(text.contains("rerank_provider"), "{text}");
+        assert!(
+            !text.contains("http://localhost/local"),
+            "the fabricated URL must not reach the user: {text}"
+        );
+    }
 
     #[test]
     fn scores_are_put_back_in_document_order() {

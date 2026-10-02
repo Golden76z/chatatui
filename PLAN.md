@@ -36,11 +36,11 @@ src/
   main.rs lib.rs app.rs runtime.rs event.rs action.rs keymap.rs commands.rs
   config.rs layout.rs terminal.rs prompt.rs transcript.rs tokens.rs files.rs
   state/    conversation.rs model_picker.rs overlay.rs palette.rs scroll.rs sidebar.rs status.rs
-  llm/      mod.rs http.rs openai.rs anthropic.rs sse.rs stream_task.rs mock.rs
+  llm/      mod.rs http.rs openai.rs anthropic.rs local.rs sse.rs stream_task.rs mock.rs
   context/  mod.rs none.rs
   storage/  mod.rs schema.rs worker.rs
   markdown/ render.rs highlight.rs wrap.rs
-  models/   mod.rs hub.rs gguf.rs store.rs download.rs
+  models/   mod.rs hub.rs gguf.rs store.rs download.rs tokenizer.rs template.rs
   ui/       mod.rs chat.rs context_view.rs help.rs model_picker.rs models_view.rs
             gguf_picker.rs palette.rs prompt_view.rs sidebar.rs status_bar.rs
             suggestions.rs text_popup.rs
@@ -111,6 +111,17 @@ tests/      app_flow.rs http_clients.rs fixtures/*.sse
   from the ticks counted since the phase arrived. Dividing by 3 and by 30 is also what keeps
   the value stable across two of every three ticks, so the transcript is not dirtied 30
   times a second and the markdown render cap survives.
+- Local inference runs on `candle` 0.11, not on `llama-cpp-2`, and that is the central
+  trade-off of J34. `llama-cpp-2` is more capable in every respect — every quantization,
+  every architecture, GPU backends, a GGUF tokenizer and chat templates already written —
+  but it depends on `llama-cpp-sys-2`, a C/C++ build. `.github/workflows/release.yml` builds
+  four targets and **cross-compiles** `aarch64-unknown-linux-gnu`, so a `-sys` dependency
+  means a cross C toolchain on the build host, not merely cmake. Keeping
+  `cargo build --release --locked --target <t>` working unchanged on all four was judged
+  worth more than the capability, given a scope of one small model on CPU — and the cost is
+  paid in the accepted limitations: Qwen3 only, no GPU, no i-quants, and a tokenizer
+  (`models/tokenizer.rs`) and a chat template (`models/template.rs`) written here because
+  candle supplies neither.
 
 ## Milestones
 
@@ -147,8 +158,9 @@ tests/      app_flow.rs http_clients.rs fixtures/*.sse
 | J29 ✅ | Find in the conversation: `Ctrl+F` / `/find [texte]`, matches over display lines (accents and case ignored) highlighted, current one scrolled into view, kept while a reply streams |
 | J30 ✅ | MCP client: `[mcp.<name>]` servers started at launch (stdio JSON-RPC: `initialize`, paged `tools/list`, `tools/call`; `ping`/`roots/list` answered), tools offered as `<server>__<tool>` with confirmation and a warning, `/mcp` popup; checked against the reference filesystem and everything servers |
 | J31 ✅ | `/compare <modèle>`: the last question answered again by another model without changing the conversation's, side-by-side popup (streams live), keep either reply (the other becomes a version); replies record their model, shown next to version markers |
-| J32 ✅ | Local model store: `/pull <dépôt> [fichier]` downloads a GGUF from HuggingFace (`owner/name` or a pasted URL, picker over the repository's files, resumable after `Esc`, sha256 checked when published), the file's own header gives architecture, quantization, context window and parameter count, `/models` is one browsable list of what is on disk (schema v11) and a short hand-picked set of well-known repositories that are not — `Entrée` opens the quantization picker for any row (including one on disk, to fetch another quantization), `Suppr` deletes, `/rm` does the same from the input; `[models] dir` / `token_env`. Downloading and inspecting only — running a local model comes later |
+| J32 ✅ | Local model store: `/pull <dépôt> [fichier]` downloads a GGUF from HuggingFace (`owner/name` or a pasted URL, picker over the repository's files, resumable after `Esc`, sha256 checked when published), the file's own header gives architecture, quantization, context window and parameter count, `/models` is one browsable list of what is on disk (schema v11) and a short hand-picked set of well-known repositories that are not — `Entrée` opens the quantization picker for any row (including one on disk, to fetch another quantization), `Suppr` deletes, `/rm` does the same from the input; `[models] dir` / `token_env`. Downloading and inspecting only in this milestone — J34 makes Qwen3 GGUFs runnable |
 | J33 ✅ | Editorial visual direction: both palettes pinned to indexed tones, role read from position (reply at column 2, question at column 8 and dimmed) instead of a coloured `▌ Vous` / `▌ Assistant` header, markdown reduced to weight, rules and indentation (heading rule the width of its text, `·` lists, code blocks indented with their language and number above rather than a per-line `▎` gutter), one rule above the input instead of a box, and `LlmEvent::Phase` so the application names the wait before the first token (`recherche dans 2 collections…`, `connexion…`, `llama3.2 réfléchit…`, `exécution de read_file…`, each round of a tool-using answer announcing its own) with a turning glyph and the seconds past the first. Still no local inference: the J32 store downloads GGUF files it cannot yet execute |
+| J34 ✅ | Local inference: a `local` provider, listed and selected through `/model` like any other, decodes a Qwen3 GGUF from the J32 store in-process on a dedicated OS thread (never the tokio runtime) and streams the reply — tokenizer and chat template read from the GGUF's own metadata, no server, no key. One architecture (Qwen3), CPU only, no tools; legacy and K-quant families (`Q4_0`…`Q8_1`, `Q2_K`…`Q8_K`, so `Q4_K_M` and the other suffixed variants) plus `F32`/`F16`/`BF16`, `Q4_K_M` recommended; i-quants (`IQ*`) are implemented by no candle dtype and are refused at load |
 
 Continuous integration (`.github/workflows/ci.yml`) runs the same checks on every push;
 pushing a `v*` tag builds release binaries (`release.yml`).

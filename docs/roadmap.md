@@ -27,13 +27,17 @@
 - **J32**: local model store — `/models` browses what is on disk alongside a short
   hand-picked set of well-known GGUF repositories (`Entrée` downloads, `Suppr` deletes),
   `/pull` downloads from HuggingFace (resumable, sha256-checked) and the file's own header
-  supplies the metadata. Downloading and inspecting only: nothing runs the models yet.
+  supplies the metadata. Downloading and inspecting only in this milestone: J34 makes
+  Qwen3 GGUFs runnable.
 - **J33**: editorial visual direction — both palettes pin indexed tones, role is read from
   position instead of a coloured header, the markdown vocabulary is reduced to weight,
   rules and indentation, and the application names the wait it is in before the first
   token (phase, turning glyph, seconds) instead of freezing.
+- **J34**: running local models — a `local` provider decodes a Qwen3 GGUF from the J32
+  store in-process, on CPU, on its own thread, tokenizer and chat template read from the
+  GGUF's own metadata. In: one architecture (Qwen3), K-quants. Out: GPU, tools, i-quants
+  (unsupported by the underlying engine).
 
 ## Next
 
-- Running local models: GGUF tokenizer and inference.
 - MCP over HTTP (remote servers), and `tools/list_changed` notifications.

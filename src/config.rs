@@ -122,6 +122,8 @@ pub enum ProviderKind {
     Openai,
     /// Anthropic Messages API (Claude).
     Anthropic,
+    /// No wire protocol at all: a GGUF from the model store, decoded in this process.
+    Local,
 }
 
 /// A `[providers.<name>]` section; unset fields keep the preset or default value.
@@ -304,6 +306,14 @@ fn presets() -> Vec<(&'static str, ProviderConfig)> {
                 ..ProviderConfig::default()
             },
         ),
+        (
+            "local",
+            ProviderConfig {
+                kind: Some(ProviderKind::Local),
+                label: Some("Local".into()),
+                ..ProviderConfig::default()
+            },
+        ),
     ]
 }
 
@@ -463,6 +473,10 @@ impl Config {
                     .unwrap_or_else(|| match kind {
                         ProviderKind::Openai => "http://localhost:8080/v1".into(),
                         ProviderKind::Anthropic => "https://api.anthropic.com/v1".into(),
+                        // No server at all, but a loopback host keeps `local` (below) true,
+                        // which is the honest answer: nothing this provider does ever
+                        // leaves the machine. `LocalClient` never reads this value.
+                        ProviderKind::Local => "http://localhost/local".into(),
                     })
                     .trim_end_matches('/')
                     .to_owned();
@@ -581,11 +595,28 @@ mod tests {
         assert_eq!(config.models.token_env, "HF");
     }
 
+    /// The local engine is a provider like any other, so `/model` lists downloaded GGUF
+    /// files beside Ollama's models. It needs no key, so it is always constructed.
+    #[test]
+    fn the_local_provider_is_a_preset_that_needs_no_key() {
+        let config = Config::default();
+
+        let providers = config.resolve_providers(|_| None);
+
+        let local = providers
+            .iter()
+            .find(|p| p.id == "local")
+            .expect("the local provider is a preset");
+        assert_eq!(local.kind, ProviderKind::Local);
+        assert!(local.api_key_env.is_none(), "no key to miss");
+        assert!(!local.missing_key(), "so it is never Unavailable for a key");
+    }
+
     #[test]
     fn presets_are_always_available() {
         let providers = Config::default().resolve_providers(no_env);
         let ids: Vec<&str> = providers.iter().map(|p| p.id.as_str()).collect();
-        assert_eq!(ids, ["ollama", "openai", "claude"]);
+        assert_eq!(ids, ["ollama", "openai", "claude", "local"]);
 
         let ollama = by_id(&providers, "ollama");
         assert!(ollama.local);

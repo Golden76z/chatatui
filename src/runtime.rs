@@ -189,11 +189,14 @@ impl Runtime {
     /// `database`) and spawns the terminal event task.
     pub fn new(config: Config, keyboard_enhanced: bool, database: Location) -> Result<Self> {
         let providers = config.resolve_providers(|name| std::env::var(name).ok());
-        let clients =
-            llm::build_clients(&providers, Duration::from_secs(config.connect_timeout_secs));
+        let models = ModelsBackend::new(&config, &database);
+        let clients = llm::build_clients(
+            &providers,
+            Duration::from_secs(config.connect_timeout_secs),
+            &models.dir,
+        );
         let provider_order = providers.iter().map(|p| p.id.clone()).collect();
         let rag = RagBackend::new(&config, &providers, &database);
-        let models = ModelsBackend::new(&config, &database);
         let mut context = RagContext::new(
             rag.embedder.clone(),
             rag.database.clone(),

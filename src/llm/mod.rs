@@ -15,6 +15,7 @@ use crate::config::{Provider, ProviderKind};
 
 pub mod anthropic;
 pub mod http;
+pub mod local;
 pub mod mock;
 pub mod openai;
 pub mod sse;
@@ -200,6 +201,13 @@ pub enum LlmError {
     /// The server reported an error inside the stream.
     #[error("erreur du serveur : {0}")]
     Server(String),
+    /// A backend that is not a server failed, and said so in its own words.
+    ///
+    /// Shown verbatim, with no prefix: the local engine has no daemon and no status code, so
+    /// `Server`'s `erreur du serveur :` would send the user looking for an Ollama that is not
+    /// involved. The message is the whole sentence the engine wrote.
+    #[error("{0}")]
+    Local(String),
     /// The request or the response could not be understood.
     #[error("réponse invalide : {0}")]
     Protocol(String),
@@ -237,7 +245,14 @@ pub type Clients = HashMap<String, Arc<dyn LlmClient>>;
 
 /// Builds a client for each provider. Providers without their API key, or with an invalid
 /// configuration, get an [`Unavailable`] client that explains why.
-pub fn build_clients(providers: &[Provider], connect_timeout: Duration) -> Clients {
+///
+/// `models_dir` is the local model store, which the local provider scans; it is resolved by
+/// `ModelsBackend::new` in the runtime.
+pub fn build_clients(
+    providers: &[Provider],
+    connect_timeout: Duration,
+    models_dir: &std::path::Path,
+) -> Clients {
     providers
         .iter()
         .map(|provider| {
@@ -255,6 +270,9 @@ pub fn build_clients(providers: &[Provider], connect_timeout: Duration) -> Clien
                     ProviderKind::Anthropic => {
                         anthropic::AnthropicClient::new(provider, connect_timeout)
                             .map(|c| Arc::new(c) as Arc<dyn LlmClient>)
+                    }
+                    ProviderKind::Local => {
+                        Ok(Arc::new(local::LocalClient::new(models_dir)) as Arc<dyn LlmClient>)
                     }
                 };
                 built.unwrap_or_else(|error| Arc::new(Unavailable(error)))
@@ -346,6 +364,20 @@ mod tests {
         );
     }
 
+    /// The local engine has no server to blame. Its message is the whole sentence the user
+    /// reads, so the variant must add nothing to it.
+    #[test]
+    fn a_local_failure_is_shown_word_for_word() {
+        let error = LlmError::Local(
+            "architecture « gemma3 » non prise en charge par le moteur local".into(),
+        );
+
+        assert_eq!(
+            error.to_string(),
+            "architecture « gemma3 » non prise en charge par le moteur local"
+        );
+    }
+
     #[test]
     fn http_statuses_are_classified() {
         assert!(matches!(
@@ -365,10 +397,26 @@ mod tests {
     #[tokio::test]
     async fn providers_without_key_are_unavailable() {
         let providers = Config::default().resolve_providers(|_| None);
-        let clients = build_clients(&providers, Duration::from_secs(1));
-        assert_eq!(clients.len(), 3);
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let clients = build_clients(&providers, Duration::from_secs(1), dir.path());
+        assert_eq!(clients.len(), 4);
         let error = clients["claude"].list_models().await.expect_err("no key");
         assert!(matches!(error, LlmError::MissingKey { .. }));
+    }
+
+    #[test]
+    fn the_local_provider_gets_a_usable_client_not_an_excuse() {
+        let config = Config::default();
+        let providers = config.resolve_providers(|_| None);
+        let dir = tempfile::tempdir().expect("a temporary directory");
+
+        let clients = build_clients(&providers, Duration::from_secs(1), dir.path());
+
+        assert!(
+            clients.contains_key("local"),
+            "the local provider is built: {:?}",
+            clients.keys().collect::<Vec<_>>()
+        );
     }
 
     #[test]

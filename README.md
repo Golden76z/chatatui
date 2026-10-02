@@ -27,8 +27,9 @@ Claude is reached through the native Anthropic Messages API.
   Word and LibreOffice files (`/index`), pick a collection per conversation (`/rag`), and
   replies list the passages they cite
 - Local model store: browse well-known GGUF models and the ones already on disk in one
-  list (`/models`), download from HuggingFace (`/pull`), read their metadata — downloading
-  and inspecting only, running them comes later
+  list (`/models`), download from HuggingFace (`/pull`), read their metadata, and run a
+  Qwen3 GGUF in-process on CPU through the `local` provider — no daemon, no second file
+  to fetch
 - Configurable system prompt; network errors shown in the UI, never a crash
 
 ## Install
@@ -127,13 +128,18 @@ the message stays in the input, unsent.
 
 ### Providers
 
-Three providers are predefined; a section only overrides what it sets:
+Four providers are predefined; a section only overrides what it sets:
 
 | Name | Protocol | Default URL | Key |
 |---|---|---|---|
 | `ollama` | OpenAI-compatible | `http://localhost:11434/v1` | none |
 | `openai` | OpenAI | `https://api.openai.com/v1` | `$OPENAI_API_KEY` |
 | `claude` | Anthropic Messages | `https://api.anthropic.com/v1` | `$ANTHROPIC_API_KEY` |
+| `local` | none (in-process) | — | none |
+
+`local` is not a server: it decodes a GGUF from the [model store](#local-models) itself, on
+CPU, in this process. It needs no key, so it is always listed. See
+[Local models](#local-models) for what it can run.
 
 To use ChatGPT or Claude models, create an API key (platform.openai.com /
 console.anthropic.com — API usage is billed separately from ChatGPT Plus or Claude Pro
@@ -337,9 +343,26 @@ next to the configuration; Windows: `%APPDATA%\chatatui\data\models`), beside a 
 file while the download is in progress. The token, like the provider API keys, is read by
 the runtime and never reaches the UI.
 
-**A downloaded model cannot answer yet.** This milestone downloads and inspects GGUF
-files; it does not run them. To talk to a local model today, serve it with Ollama or
-llama.cpp and point a provider at it.
+**Running a downloaded model.** Pick it through `/model` like any other model: the `local`
+provider lists every `.gguf` in the store next to Ollama's and the cloud providers'
+models, and answers in-process on CPU, with no daemon and no second file to fetch.
+
+This first engine is narrow on purpose:
+
+- **Architecture: Qwen3 only.** Any other architecture is refused by name rather than
+  producing garbage. Other architectures still need Ollama or llama.cpp.
+- **Quantization: the legacy and K-quant families.** `Q4_0`, `Q4_1`, `Q5_0`, `Q5_1`, `Q8_0`,
+  `Q8_1`, the K-quants `Q2_K`, `Q3_K`, `Q4_K`, `Q5_K`, `Q6_K`, `Q8_K` (so `Q4_K_M`, `Q5_K_S`
+  and the other suffixed variants of those), and unquantized `F32`, `F16`, `BF16`.
+  **I-quants are not supported** (`IQ1_S`, `IQ2_XXS`, `IQ4_NL`, …): the underlying
+  [candle](https://github.com/huggingface/candle) engine implements no i-quant dtype at all,
+  and loading one fails before the first token. If a repository offers both, **`Q4_K_M` is
+  the quantization to download for a first try.**
+- **CPU only, no tools.** No GPU acceleration yet, and the local provider offers no tool
+  specifications — `/tools on` with a local model just means the model has none.
+
+To talk to another architecture, or to use GPU acceleration, serve it with Ollama or
+llama.cpp and point a provider at it instead.
 
 ## Commands
 

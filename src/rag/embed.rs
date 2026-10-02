@@ -55,7 +55,11 @@ impl OpenAiEmbedder {
         model: &str,
         connect_timeout: Duration,
     ) -> Result<Self, LlmError> {
-        if provider.kind == ProviderKind::Anthropic {
+        // `Local` has no endpoint at all: its `base_url` is the fabricated
+        // `http://localhost/local` that only exists so the provider counts as loopback. It
+        // parses, and `missing_key` does not gate it, so without this guard the user is told
+        // that an address they never wrote is unreachable.
+        if matches!(provider.kind, ProviderKind::Anthropic | ProviderKind::Local) {
             return Err(LlmError::Protocol(format!(
                 "{} ne fournit pas d'embeddings : choisissez un autre embedding_provider",
                 provider.label
@@ -174,6 +178,30 @@ pub fn hash_vector(text: &str) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The local provider's `base_url` is a fabrication — `http://localhost/local`, invented
+    /// so `is_loopback` can mark it local — and `LocalClient` never reads it. It is a valid
+    /// URL and `missing_key` does not gate it, so `embedding_provider = "local"` used to build
+    /// an embedder pointed at it; the user then read `Local injoignable sur
+    /// http://localhost/local`, an address that appears nowhere in their configuration.
+    #[test]
+    fn the_local_engine_serves_no_embeddings() {
+        let providers = crate::config::Config::default().resolve_providers(|_| None);
+        let local = providers
+            .iter()
+            .find(|p| p.kind == ProviderKind::Local)
+            .expect("the local provider is a preset");
+
+        let error = OpenAiEmbedder::new(local, "nomic-embed-text", Duration::from_secs(1))
+            .expect_err("the local engine only generates replies");
+
+        let text = error.to_string();
+        assert!(text.contains("embedding_provider"), "{text}");
+        assert!(
+            !text.contains("http://localhost/local"),
+            "the fabricated URL must not reach the user: {text}"
+        );
+    }
 
     #[test]
     fn vectors_are_normalized() {
