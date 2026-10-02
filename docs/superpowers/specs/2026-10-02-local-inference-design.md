@@ -185,13 +185,26 @@ string that ships in the actual Qwen3 GGUF.
 
 ## Components
 
-### `src/models/gguf.rs` — a second entry point
+### `src/models/gguf.rs` — untouched
 
-`read(&Path) -> Result<Metadata, ModelError>` stays exactly as it is, byte for byte. A new
-sibling is added:
+This milestone does not change the existing parser at all, and the first draft of this spec
+was wrong to plan an extension of it.
+
+The reason: `candle_core::quantized::gguf_file::Content` — which must be read anyway to load
+the weights — exposes `metadata: HashMap<String, Value>` with `Value::Array(Vec<Value>)` and
+accessors `to_vec()`, `to_string()`, `to_i32()`, `to_u32()`, `to_bool()`. **candle already
+parses the vocabulary arrays our parser steps over.** Writing array readers to recover data
+candle hands us would be duplicate code, duplicate bounds checks and duplicate bugs.
+
+`src/models/gguf.rs` therefore keeps its single job, and keeps it well: inspecting a freshly
+downloaded file for `/models` without loading a tensor or a 150 000-entry vocabulary.
+
+### `src/models/tokenizer.rs` — new
+
+Two functions, split so that the part worth testing is testable:
 
 ```rust
-/// The tokenizer data a local engine needs, read on demand.
+/// The tokenizer data a local engine needs, lifted out of a GGUF's metadata.
 pub struct TokenizerData {
     pub model: String,                 // tokenizer.ggml.model: "gpt2" | "llama" | "spm"
     pub tokens: Vec<String>,           // tokenizer.ggml.tokens
@@ -204,25 +217,19 @@ pub struct TokenizerData {
     pub chat_template: Option<String>, // read, not interpreted
 }
 
-pub fn read_tokenizer(path: &Path) -> Result<TokenizerData, ModelError>;
+/// Lifts the tokenizer keys out of the metadata candle already parsed.
+pub fn from_metadata(
+    metadata: &std::collections::HashMap<String, gguf_file::Value>,
+) -> Result<TokenizerData, ModelError>;
+
+/// Builds the tokenizer. Pure: no file, no candle types, no I/O.
+pub fn build(data: &TokenizerData) -> Result<tokenizers::Tokenizer, ModelError>;
 ```
 
-**Two functions and not one, on purpose.** `/models` renders one line per model; it must not
-read a 150 000-entry vocabulary to do it. The cheap path stays cheap, and the expensive path
-is called only when a model is about to be loaded.
+The split matters for testing: `Value`'s variants are public, so a test builds a metadata map
+literally and drives `from_metadata` with no file at all, and `build` never sees a candle type.
 
-The existing bounds apply unchanged — `MAX_ARRAY` on element counts, `MAX_STRING` on each
-string — so a hostile file fails instead of allocating. A vocabulary that exceeds the bound
-is an error, not a truncation.
-
-### `src/models/tokenizer.rs` — new
-
-```rust
-/// Builds a tokenizer from data read out of a GGUF, with no companion file.
-pub fn from_gguf(data: &TokenizerData) -> Result<tokenizers::Tokenizer, ModelError>;
-```
-
-Handles `model == "gpt2"` (byte-level BPE) and returns
+`build` handles `model == "gpt2"` (byte-level BPE) and returns
 `ModelError::Gguf("tokenizer <name> non pris en charge")` for anything else. Byte-level
 pre-tokenization and decoding are configured to match what the GGUF declares.
 
@@ -282,11 +289,19 @@ own sake.
 ### Two GGUF readers, kept on purpose
 
 After this milestone the crate contains two: ours (`src/models/gguf.rs`) and candle's
-(`candle_core::quantized::gguf_file`). This is deliberate, not an oversight to be cleaned up
-later. Ours is bounds-checked against hostile input and reads a freshly downloaded file
-without loading a single tensor, which is what `/pull` and `/models` need. Candle's loads
-weights, which is what the engine needs. Replacing ours with candle's would mean allocating
-tensors to render a list; replacing candle's with ours would mean reimplementing its loader.
+(`candle_core::quantized::gguf_file`). This is deliberate, and the split is clean because
+each is used for exactly one thing.
+
+Ours is bounds-checked against hostile input and reads a freshly downloaded file without
+loading a single tensor or a single vocabulary entry — which is what `/pull` and `/models`
+need, on every model in the store, every time the popup opens.
+
+Candle's reads everything into memory, which is correct when a model is actually being
+loaded, and it is then the single source for both the weights **and** the tokenizer data.
+Nothing is parsed twice on the loading path.
+
+Replacing ours with candle's would mean reading a whole vocabulary to render a list row.
+Replacing candle's with ours would mean reimplementing its tensor loader. Both stay.
 
 ## Error handling
 
@@ -309,13 +324,14 @@ this backend and must not appear in it.
 
 Everything is unit-testable **except the forward pass**, and the split is the point.
 
-- **`read_tokenizer`** — hand-built GGUF byte fixtures. `src/models/gguf.rs` already
-  constructs GGUF bytes in its tests; the same helpers extend to arrays. Cases: a vocabulary
-  read correctly; merges read correctly; special-token ids recovered; `chat_template`
-  captured; a declared array length over `MAX_ARRAY` rejected without allocating; a file
-  truncated mid-array failing rather than returning a short vocabulary.
-- **`tokenizer::from_gguf`** — a tiny hand-written vocabulary with known encode/decode pairs,
-  including a round trip, a byte-fallback case, and an unsupported family rejected.
+- **`tokenizer::from_metadata`** — a metadata map built literally in the test, since `Value`'s
+  variants are public. Cases: the vocabulary and merges lifted in order; special-token ids
+  recovered; `chat_template` captured; a missing `tokenizer.ggml.tokens` rejected with a
+  message naming the key rather than panicking; a `tokens` entry of the wrong `Value` type
+  rejected rather than silently skipped.
+- **`tokenizer::build`** — a tiny hand-written vocabulary with known encode/decode pairs,
+  including a round trip, a byte-fallback case, and an unsupported family rejected. Takes no
+  candle type, so it needs no fixture at all.
 - **`template::render`** — exact string assertions, character for character, including the
   trailing `<|im_start|>assistant\n` that must be present for generation to start, a
   system-prompt-only conversation, and an unsupported architecture rejected by name.
@@ -391,24 +407,41 @@ scope does not change, only the amount of code in `src/models/tokenizer.rs`.
 
 ## Suggested task breakdown
 
-Five tasks, one per layer, in dependency order:
+Four tasks, one per layer, in dependency order:
 
-1. **`read_tokenizer` in `src/models/gguf.rs`** — the arrays the parser currently steps over,
-   plus the special-token ids and the chat template. Owns `src/models/gguf.rs`.
-2. **`src/models/tokenizer.rs`** — the in-memory byte-level BPE. **This task opens with the
-   feature audit**, because its outcome decides how much code the task contains: a thin
-   adapter over `tokenizers` if option 1 or 2 holds, a hand-rolled scanner if option 3 is
+1. **`src/models/tokenizer.rs`** — `TokenizerData`, `from_metadata`, `build`. Owns the
+   `candle-core` and `tokenizers` dependencies. **This task opens with the feature audit**,
+   because its outcome decides how much code the task contains: a thin adapter over
+   `tokenizers` if resolution option 1 or 2 holds, a hand-rolled scanner if option 3 is
    forced. Its tests — encode, decode, round trip, byte fallback, unsupported family — are
-   the same either way, which is what makes the fallback cheap to take. Depends on task 1's
-   `TokenizerData`.
-3. **`src/models/template.rs`** — ChatML rendering. Independent of tasks 1 and 2; can run in
-   parallel with task 1.
-4. **`src/llm/local.rs`** — the engine, the thread boundary, the streaming adapter, and the
-   candle dependencies. Depends on tasks 1-3.
-5. **Wiring and documentation** — `ProviderKind::Local`, the preset, the `build_clients` arm,
-   `README.md`, `PLAN.md`, `docs/roadmap.md`, and the `cargo tree` check that no `*-sys`
-   crate entered the build. Depends on task 4.
+   the same either way, which is what makes the fallback cheap to take.
+2. **`src/models/template.rs`** — ChatML rendering. Shares no file with task 1 and depends on
+   nothing it produces; the two can start together.
+3. **`src/llm/local.rs`** — the `Engine` seam, the candle engine, the thread boundary and the
+   streaming adapter, plus `candle-nn` and `candle-transformers`. Depends on tasks 1 and 2.
+4. **Wiring and documentation** — `ProviderKind::Local`, the preset, the `build_clients` arm
+   and its new parameter, `README.md`, `PLAN.md`, `docs/roadmap.md`, and the `cargo tree`
+   gate. Depends on task 3.
 
-Tasks 1 and 3 share no file and can start together. In Rust the crate is a single
-compilation unit, so parallel tasks must run in isolated worktrees: a task's TDD red phase
-leaves the lib test binary uncompilable, which would break its neighbour's `cargo test`.
+Tasks 1 and 2 share no file and can start together. In Rust the crate is a single
+compilation unit, so parallel tasks must run in **isolated worktrees**: a task's TDD red
+phase leaves the lib test binary uncompilable, which would break its neighbour's
+`cargo test`. This was learnt the hard way in J32 and confirmed in J33.
+
+### One interface the first draft missed
+
+`store::list` requires a `&rusqlite::Connection`, and `build_clients(providers,
+connect_timeout)` receives neither a connection nor the models configuration — so a
+`LocalClient` built there cannot read the inventory, as the first draft assumed.
+
+Resolution: `LocalClient` does not read the database at all. It **scans the models
+directory**, whose layout `download::paths` fixes as `<dir>/<owner>/<repo>/<file>`, and reads
+each file's header with the existing `gguf::read` for the context window. The filesystem is
+the right authority for "what can I load" — a file deleted outside the application is
+correctly absent — and it avoids a second SQLite connection.
+
+That requires the resolved directory to reach `build_clients`, which is a three-line change:
+`ModelsBackend::new(&config, &database)` already resolves it at `src/runtime.rs:195`, just
+below the `build_clients` call at `:193`. The two are reordered, `build_clients` gains a
+`models_dir: &Path` parameter, and its one test call site (`src/llm/mod.rs:368`) is updated.
+Task 4 owns this.
