@@ -10,9 +10,12 @@ Any server exposing the OpenAI-compatible API (`POST /v1/chat/completions` with 
 streaming, `GET /v1/models`) works: Ollama, llama.cpp server, LM Studio, vLLM, OpenAI.
 Claude is reached through the native Anthropic Messages API.
 
-- Streaming replies, cancellable with `Esc`
-- Markdown rendering: headings, bold/italic, lists, quotes, tables, syntax-highlighted
-  code blocks
+- Streaming replies, cancellable with `Esc`; before the first word the application names
+  the wait it is in — connecting, searching the documents, the model thinking, a tool
+  running — with the seconds it has taken
+- Markdown rendering: headings with a rule, bold/italic, lists, quotes, tables, and
+  syntax-highlighted code blocks set in by an indent
+- Role read from position: the question indented and dim, the reply at the left margin
 - Scrollable conversation with auto-scroll that pauses when you scroll up
 - History in SQLite: new conversation, list of past conversations, reopen, rename or
   delete any of them, and full-text search across all messages
@@ -73,6 +76,31 @@ bar then shows what the conversation has cost since it was opened (`· 0,0220 �
 `/context` the details. While a reply streams, the status bar shows its speed
 (`◐ Génération… 42 t/s`); `/context` keeps the last one (tokens, seconds, time to first
 token).
+
+### Interface
+
+Who speaks is read from position, not from a label: the question is indented and dimmed,
+the reply sits at the left margin. The roles that position cannot tell apart — `système`,
+`résumé de la conversation`, `fichier joint`, `outil` — keep a small dim label above their
+body. Rhythm replaces frames: one blank line after every message, one more before a
+question, so a turn is separated from the next by two and its own halves by one.
+
+Inside a reply, headings carry a heavier weight and a rule the width of their own text,
+lists a middle dot `·`, quotes a bar `│`. A code block is simply indented by four columns,
+with its language on the line above and, when the reply holds several blocks, the number
+`/copy code N` asks for, right-aligned on that same line.
+
+The input carries one horizontal rule above it rather than a box. While no word has
+arrived yet, the application names the wait where the text itself will appear, with a
+turning glyph and the seconds past the first, in the order the waits occur: `recherche
+dans 2 collections…`, `connexion…`, `llama3.2 réfléchit…`, `exécution de read_file…`. A
+tool-using answer names them again for every round, the second one carrying the tool
+output and so waiting longest. The version marker
+`‹ 2/3 ›` goes under the body of the reply, and only when there is another version to
+compare it against.
+
+Both palettes pin indexed tones rather than the eight basic ANSI colours, which every
+terminal theme redefines; `theme = "light"` switches to the light one.
 
 ### Context gauge
 
@@ -358,7 +386,7 @@ Start a message with `//` to send text that begins with a slash.
 | `Ctrl+Y` | Copy the last reply |
 | `Ctrl+F` | Find in the conversation: type to search, `Enter` / `↓` next match, `Shift+Enter` / `↑` previous, `Esc` closes |
 | `Ctrl+↑` / `Ctrl+↓` | Previous / next message sent (all conversations); back to what you were typing after the last |
-| `Alt+←` / `Alt+→` (empty input) | Previous / next version of the last replaced exchange (`‹ 2/3 ›` in the header, after `/edit` or `/retry`) |
+| `Alt+←` / `Alt+→` (empty input) | Previous / next version of the last replaced exchange (`‹ 2/3 ›` under the reply, after `/edit` or `/retry`) |
 | `F1` | Help |
 | `PgUp` / `PgDn`, mouse wheel | Scroll the conversation |
 | `Up` / `Down` (empty input) | Scroll by one line |

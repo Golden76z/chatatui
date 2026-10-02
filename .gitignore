@@ -1,2 +1,6 @@
 /target
 *.snap.new
+
+# Agent worktrees and plan workspaces (scratch, never committed)
+.claude/
+.superpowers/

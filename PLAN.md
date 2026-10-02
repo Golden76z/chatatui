@@ -103,6 +103,14 @@ tests/      app_flow.rs http_clients.rs fixtures/*.sse
 - Esc closes the topmost overlay first: model popup, then conversation list, then cancels
   the generation, then stops indexing, then stops a model download.
 - UI strings in French, code and comments in English. No `unwrap()` outside tests.
+- Both palettes (dark and light) pin indexed tones instead of the eight basic ANSI colours:
+  every terminal theme redefines those eight, so `Color::Red` is whatever the user's scheme
+  decided and contrast cannot be reasoned about. Indexed tones are fixed.
+- The waiting line's clock is the tick count, not a timestamp: `App::update` must stay pure
+  and reads no clock, so `App::waiting()` derives the glyph frame and the elapsed seconds
+  from the ticks counted since the phase arrived. Dividing by 3 and by 30 is also what keeps
+  the value stable across two of every three ticks, so the transcript is not dirtied 30
+  times a second and the markdown render cap survives.
 
 ## Milestones
 
@@ -140,6 +148,7 @@ tests/      app_flow.rs http_clients.rs fixtures/*.sse
 | J30 ✅ | MCP client: `[mcp.<name>]` servers started at launch (stdio JSON-RPC: `initialize`, paged `tools/list`, `tools/call`; `ping`/`roots/list` answered), tools offered as `<server>__<tool>` with confirmation and a warning, `/mcp` popup; checked against the reference filesystem and everything servers |
 | J31 ✅ | `/compare <modèle>`: the last question answered again by another model without changing the conversation's, side-by-side popup (streams live), keep either reply (the other becomes a version); replies record their model, shown next to version markers |
 | J32 ✅ | Local model store: `/pull <dépôt> [fichier]` downloads a GGUF from HuggingFace (`owner/name` or a pasted URL, picker over the repository's files, resumable after `Esc`, sha256 checked when published), the file's own header gives architecture, quantization, context window and parameter count, `/models` is one browsable list of what is on disk (schema v11) and a short hand-picked set of well-known repositories that are not — `Entrée` opens the quantization picker for any row (including one on disk, to fetch another quantization), `Suppr` deletes, `/rm` does the same from the input; `[models] dir` / `token_env`. Downloading and inspecting only — running a local model comes later |
+| J33 ✅ | Editorial visual direction: both palettes pinned to indexed tones, role read from position (reply at column 2, question at column 8 and dimmed) instead of a coloured `▌ Vous` / `▌ Assistant` header, markdown reduced to weight, rules and indentation (heading rule the width of its text, `·` lists, code blocks indented with their language and number above rather than a per-line `▎` gutter), one rule above the input instead of a box, and `LlmEvent::Phase` so the application names the wait before the first token (`recherche dans 2 collections…`, `connexion…`, `llama3.2 réfléchit…`, `exécution de read_file…`, each round of a tool-using answer announcing its own) with a turning glyph and the seconds past the first. Still no local inference: the J32 store downloads GGUF files it cannot yet execute |
 
 Continuous integration (`.github/workflows/ci.yml`) runs the same checks on every push;
 pushing a `v*` tag builds release binaries (`release.yml`).

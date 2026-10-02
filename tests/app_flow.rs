@@ -302,6 +302,51 @@ async fn reply_is_streamed_into_the_conversation() {
     assert_eq!(h.app.status, Status::Ready);
 }
 
+/// The whole point: the screen must stop being still. A reply that has not started yet
+/// says which wait it is in, and the line is replaced by the text in place.
+#[tokio::test]
+async fn the_wait_before_the_first_token_is_visible() {
+    let mut harness = Harness::new(Arc::new(MockLlmClient::new([MockReply::tokens(&[
+        "Il était une fois",
+    ])])));
+    // A real width: the default (zero) viewport wraps at one column, breaking every
+    // substring check below across newlines.
+    harness.app.update(Action::Resize {
+        width: 60,
+        height: 20,
+    });
+    let effects = submit(&mut harness.app, "Raconte une histoire");
+    let request_id = effects
+        .into_iter()
+        .find_map(|e| match e {
+            Effect::StartCompletion(job) => Some(job.request_id),
+            _ => None,
+        })
+        .expect("a job was started");
+
+    harness.app.update(Action::Llm {
+        request_id,
+        event: chatatui::llm::LlmEvent::Phase(chatatui::llm::Phase::Waiting {
+            model: "llama3.2".to_owned(),
+        }),
+    });
+    for _ in 0..60 {
+        harness.app.update(Action::Tick);
+    }
+    let text = harness.app.transcript.line_texts().join("\n");
+    assert!(text.contains("llama3.2 réfléchit…"), "{text}");
+    assert!(text.contains("2 s"), "{text}");
+
+    harness.app.update(Action::Llm {
+        request_id,
+        event: chatatui::llm::LlmEvent::Token("Il était".to_owned()),
+    });
+    harness.app.update(Action::Tick);
+    let text = harness.app.transcript.line_texts().join("\n");
+    assert!(!text.contains("réfléchit"), "replaced in place: {text}");
+    assert!(text.contains("Il était"), "{text}");
+}
+
 #[tokio::test]
 async fn second_turn_sends_the_whole_history() {
     let llm = Arc::new(MockLlmClient::new([
@@ -330,8 +375,10 @@ async fn escape_cancels_a_running_generation() {
     ])]));
     let mut h = Harness::new(llm.clone());
     h.send("Raconte une histoire");
-    h.step().await;
-    h.step().await;
+    // Retrieving, connecting, waiting, then the two tokens.
+    for _ in 0..5 {
+        h.step().await;
+    }
 
     h.dispatch(Action::Cancel);
     assert_eq!(
@@ -384,7 +431,10 @@ async fn conversations_are_saved_and_reopened() {
     h.send("Capitale de la France ?");
     h.run_until_idle().await;
     h.send("Population ?");
-    h.step().await;
+    // Retrieving, connecting, waiting, then the one token.
+    for _ in 0..4 {
+        h.step().await;
+    }
     h.dispatch(Action::Cancel);
     let first_id = h.app.conversation_id.clone().expect("stored");
     let first_messages = h.app.conversation.messages().to_vec();
@@ -1081,7 +1131,18 @@ async fn the_model_reads_a_file_once_allowed() {
         allow: false,
         always: false,
     });
-    h.run_until_idle().await;
+    // Review Focus 4 / Task 2's guarantee: a refused call never sends `Phase::RunningTool`,
+    // so the waiting line must never show the tool as running while this plays out.
+    while h.app.is_generating() {
+        h.step().await;
+        assert!(
+            !matches!(
+                h.app.waiting().map(|w| w.phase),
+                Some(chatatui::llm::Phase::RunningTool { .. })
+            ),
+            "a refused tool call must never show as running"
+        );
+    }
     let refused = &llm.requests()[3];
     assert!(
         refused

@@ -5,7 +5,7 @@ use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Paragraph},
+    widgets::{Block, Borders, Padding, Paragraph},
 };
 
 use crate::state::Find;
@@ -33,9 +33,12 @@ pub fn render(find: &Find, frame: &mut Frame, area: Rect) {
         Span::raw("   "),
         count,
     ]);
-    let block = Block::bordered()
-        .border_type(BorderType::Rounded)
+    // The same chrome as the input it replaces — one rule, no box — so taking the slot does
+    // not redraw its frame. The accent colour on the rule is what says the mode changed.
+    let block = Block::new()
+        .borders(Borders::TOP)
+        .padding(Padding::new(1, 1, 0, 1))
         .border_style(Style::default().fg(palette.accent))
-        .title(" Chercher dans la conversation ");
+        .title("── Chercher dans la conversation ");
     frame.render_widget(Paragraph::new(line).block(block), area);
 }

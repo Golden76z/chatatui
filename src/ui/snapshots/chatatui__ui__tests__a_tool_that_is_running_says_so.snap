@@ -3,14 +3,14 @@ source: src/ui/mod.rs
 expression: "draw(&mut app, 70, 12).backend()"
 ---
 "                                                                      "
-"        Raconte une histoire                                          "
+"        Que dit mon plan ?                                            "
 "                                                                      "
-"  Il était une fois▍                                                  "
+"  Je regarde.                                                         "
 "                                                                      "
-"                                                                      "
-"                                                                      "
+"  outil                                                               "
+"  🔧 lire ~/cours/plan.md · ⠋ exécution…                              " Hidden by multi-width symbols: [(3, " ")]
 "                                                                      "
 "── Message ───────────────────────────────────────────────────────────"
 "  Écrivez votre message…                                              "
 "                                                                      "
-" ◐ Génération… │ Ollama › llama3.2 │ ctx ≈32            Échap annuler "
+" ◐ Génération… │ Ollama › llama3.2 🔧 │ ctx ≈39         Échap annuler " Hidden by multi-width symbols: [(36, " ")]

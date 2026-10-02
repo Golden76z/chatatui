@@ -264,11 +264,31 @@ pub fn build_clients(providers: &[Provider], connect_timeout: Duration) -> Clien
         .collect()
 }
 
+/// Which wait the user is currently in, while no token has arrived yet.
+///
+/// The reply is a sequence of waits — connecting, retrieving documents, waiting on the
+/// model, running a tool — and until the first token none of them is visible on screen.
+/// `stream_task` reports each one around the `await` it already performs, so neither the
+/// `LlmClient` nor the `ContextProvider` trait has to change.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Phase {
+    /// The job has started; nothing has been asked of anyone yet.
+    Connecting,
+    /// Retrieval is running over `collections` collections (0 when none is selected).
+    Retrieving { collections: usize },
+    /// The request is out and the model has not answered yet.
+    Waiting { model: String },
+    /// A tool the user approved is executing.
+    RunningTool { name: String },
+}
+
 /// Message sent by the streaming task to the UI loop.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LlmEvent {
     /// A fragment of the assistant reply.
     Token(String),
+    /// Which wait is in progress, before the first token (see [`Phase`]).
+    Phase(Phase),
     /// Token counts measured by the server.
     Usage(Usage),
     /// Passages retrieved for this reply (sent before the first token). They are numbered

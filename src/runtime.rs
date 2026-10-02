@@ -276,10 +276,14 @@ impl Runtime {
     fn handle(&mut self, event: Event) -> bool {
         let action = match event {
             Event::Tick => {
-                // Redraw only if the tick actually re-rendered something (streamed tokens).
-                let before = self.app.transcript.revision();
+                // Redraw only if the tick actually changed the screen: either the
+                // transcript re-rendered something (streamed tokens, the waiting line), or
+                // the status bar's spinner turned. The spinner is checked separately
+                // because it must keep turning while the transcript is deliberately not
+                // dirtied — that is the 30 fps markdown cap.
+                let before = (self.app.transcript.revision(), self.app.spinner_frame());
                 self.dispatch(Action::Tick);
-                return self.app.transcript.revision() != before;
+                return (self.app.transcript.revision(), self.app.spinner_frame()) != before;
             }
             Event::Crossterm(TermEvent::Key(key)) if key.kind == KeyEventKind::Press => {
                 keymap::map_key(key, self.app.key_context())

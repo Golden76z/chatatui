@@ -2,19 +2,19 @@
 source: src/ui/mod.rs
 expression: "draw(&mut app, 80, 16).backend()"
 ---
-" ▌ Vous                                                                         "
-" Que dit mon plan ?                                                             "
 "                                                                                "
-" ▌ Assistant                                                                    "
-" Je regarde.                                                                    "
-"                ╭ Autoriser l'outil ? ──────────────────────────╮               "
-" ▌ Outil        │ Le modèle veut lire ~/cours/plan.md           │               "
-" 🔧 lire ~/cours│ outil : read_file                             │               " Hidden by multi-width symbols: [(2, " ")]
+"        Que dit mon plan ?                                                      "
+"                                                                                "
+"  Je regarde.                                                                   "
+"                                                                                "
+"  outil         ╭ Autoriser l'outil ? ──────────────────────────╮               "
+"  🔧 lire ~/cour│ Le modèle veut lire ~/cours/plan.md           │               " Hidden by multi-width symbols: [(3, " ")]
+"                │ outil : read_file                             │               "
 "                │                                               │               "
 "                │ Entrée autoriser   t toujours   Échap refuser │               "
 "                ╰───────────────────────────────────────────────╯               "
 "                                                                                "
-"╭ Message ─────────────────────────────────────────────────────────────────────╮"
-"│ Écrivez votre message…                                                       │"
-"╰──────────────────────────────────────────────────────────────────────────────╯"
+"── Message ─────────────────────────────────────────────────────────────────────"
+"  Écrivez votre message…                                                        "
+"                                                                                "
 " ◐ Génération… │ Ollama › llama3.2 🔧 │ ctx ≈39              Entrée · t · Échap " Hidden by multi-width symbols: [(36, " ")]

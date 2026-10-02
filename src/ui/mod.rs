@@ -401,6 +401,59 @@ mod tests {
         insta::assert_snapshot!("compare_done", draw(&mut app, 80, 14).backend());
     }
 
+    /// The rows of each terminal line, as text.
+    fn rows(terminal: &Terminal<TestBackend>) -> Vec<String> {
+        let buffer = terminal.backend().buffer();
+        (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// `/compare` starts a job like any other, so there is a wait to name. It used to be
+    /// drawn into the main transcript — on the rows the popup covers — leaving the column
+    /// the user is actually looking at with a bare cursor.
+    #[test]
+    fn compare_names_its_wait_inside_the_popup() {
+        let mut app = App::new(&Config::default(), false);
+        app.update(Action::Resize {
+            width: 80,
+            height: 14,
+        });
+        let id = stream(&mut app, "Trier un Vec ?", &["Utilisez `v.sort()`."]);
+        app.update(Action::Llm {
+            request_id: id,
+            event: LlmEvent::Done,
+        });
+        let effects = app.run_command(crate::commands::CommandId::Compare, "qwen2.5:7b");
+        let request_id = effects
+            .iter()
+            .find_map(|e| match e {
+                Effect::StartCompletion(job) => Some(job.request_id),
+                _ => None,
+            })
+            .expect("a job");
+        app.update(Action::Llm {
+            request_id,
+            event: LlmEvent::Phase(crate::llm::Phase::Waiting {
+                model: "qwen2.5:7b".into(),
+            }),
+        });
+        let terminal = draw(&mut app, 80, 14);
+        let rows = rows(&terminal);
+        let line = rows
+            .iter()
+            .find(|row| row.contains("réfléchit…"))
+            .unwrap_or_else(|| panic!("the wait must be named: {rows:#?}"));
+        // Inside the popup: its left border comes before the text, its right one after.
+        let (before, after) = line.split_once("réfléchit…").expect("found just above");
+        assert!(before.contains('│'), "{line:?}");
+        assert!(after.contains('│'), "{line:?}");
+    }
+
     #[test]
     fn sidebar_loading() {
         let mut app = App::new(&Config::default(), false);
@@ -768,5 +821,78 @@ mod tests {
             }),
         });
         insta::assert_snapshot!(draw(&mut app, 80, 16).backend());
+    }
+
+    /// The wait before the first token: the state that used to be a frozen screen.
+    #[test]
+    fn waiting_before_the_first_token() {
+        let mut app = App::new(&Config::default(), false);
+        let id = stream(&mut app, "Raconte une histoire", &[]);
+        app.update(Action::Llm {
+            request_id: id,
+            event: LlmEvent::Phase(crate::llm::Phase::Waiting {
+                model: "llama3.2".into(),
+            }),
+        });
+        // 90 ticks at 30 fps: the line must read `3 s`.
+        for _ in 0..90 {
+            app.update(Action::Tick);
+        }
+        insta::assert_snapshot!(draw(&mut app, 70, 12).backend());
+    }
+
+    /// Retrieval, which runs before the first HTTP byte and used to show nothing.
+    #[test]
+    fn waiting_on_retrieval_names_the_collections() {
+        let mut app = App::new(&Config::default(), false);
+        let id = stream(&mut app, "Résume le cours", &[]);
+        app.update(Action::Llm {
+            request_id: id,
+            event: LlmEvent::Phase(crate::llm::Phase::Retrieving { collections: 2 }),
+        });
+        insta::assert_snapshot!(draw(&mut app, 70, 12).backend());
+    }
+
+    /// A tool actually running, as opposed to awaiting approval — the label that was wrong.
+    #[test]
+    fn a_tool_that_is_running_says_so() {
+        let mut config = Config::default();
+        config.tools.enabled = true;
+        let mut app = App::new(&config, false);
+        let id = stream(&mut app, "Que dit mon plan ?", &["Je regarde."]);
+        app.update(Action::Llm {
+            request_id: id,
+            event: LlmEvent::ToolCall(crate::llm::ToolCall {
+                id: "c1".into(),
+                name: "read_file".into(),
+                arguments: r#"{"path":"~/cours/plan.md"}"#.into(),
+            }),
+        });
+        app.update(Action::ToolAnswer {
+            allow: true,
+            always: false,
+        });
+        app.update(Action::Llm {
+            request_id: id,
+            event: LlmEvent::Phase(crate::llm::Phase::RunningTool {
+                name: "read_file".into(),
+            }),
+        });
+        insta::assert_snapshot!(draw(&mut app, 70, 12).backend());
+    }
+
+    /// A code block whose fence has not closed yet: the label line is there, the code is
+    /// indented, and the cursor sits after the last code line.
+    #[test]
+    fn an_open_code_block_while_it_streams() {
+        let mut app = App::new(&Config::default(), false);
+        let id = stream(&mut app, "Montre-moi", &[]);
+        for token in ["Voici :\n\n```rust\n", "let v = vec![1];\n"] {
+            app.update(Action::Llm {
+                request_id: id,
+                event: LlmEvent::Token(token.into()),
+            });
+        }
+        insta::assert_snapshot!(draw(&mut app, 70, 12).backend());
     }
 }

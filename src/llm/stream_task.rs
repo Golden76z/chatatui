@@ -11,7 +11,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    ChatMessage, ChatRequest, Clients, LlmClient, LlmEvent, RequestId, StreamItem, ToolCall,
+    ChatMessage, ChatRequest, Clients, LlmClient, LlmEvent, Phase, RequestId, StreamItem, ToolCall,
 };
 use crate::{
     context::{ContextProvider, ContextQuery},
@@ -134,6 +134,11 @@ async fn generate(
                 collection: job.rag_collection.as_deref(),
                 history: &job.history,
             };
+            // `/rag a,b` stores the selection comma-joined; the count is what the line says.
+            let collections = job.rag_collection.as_deref().map_or(0, |names| {
+                names.split(',').filter(|n| !n.is_empty()).count()
+            });
+            send(LlmEvent::Phase(Phase::Retrieving { collections }));
             let context = match backends.context.provide(query).await {
                 Ok(context) => context,
                 Err(error) => return send(LlmEvent::Error(error.to_string())),
@@ -172,10 +177,25 @@ async fn generate(
             messages: messages.clone(),
             tools: tools.clone(),
         };
+        // Both phases are announced inside the loop, once per round. A tool-using turn
+        // re-enters `chat_stream` for every round, and round two carries the tool output —
+        // a strictly larger prompt, so a strictly longer wait than the first. Emitting
+        // them once before the loop left every round but the first with no phase at all,
+        // which is the frozen screen this milestone exists to remove.
+        //
+        // `Connecting` sits here rather than at the top of the job because this await is
+        // the connection: it is the first one that actually yields, so this is the first
+        // place the phase can be seen at all (nothing else awaits between the job starting
+        // and the request going out). A phase the user cannot observe is not a phase.
+        send(LlmEvent::Phase(Phase::Connecting));
         let mut stream = match llm.chat_stream(request).await {
             Ok(stream) => stream,
             Err(error) => return send(LlmEvent::Error(error.to_string())),
         };
+        // The connection is open and the request is in: what is left is the model thinking.
+        send(LlmEvent::Phase(Phase::Waiting {
+            model: job.model.clone(),
+        }));
         let mut text = String::new();
         let mut calls: std::collections::BTreeMap<usize, PartialCall> = Default::default();
         while let Some(item) = stream.next().await {
@@ -241,6 +261,9 @@ async fn generate(
                 return;
             };
             let output = if allowed {
+                send(LlmEvent::Phase(Phase::RunningTool {
+                    name: call.name.clone(),
+                }));
                 match backends.mcp.call(&call).await {
                     Some(output) => output,
                     None => {
@@ -329,7 +352,19 @@ mod tests {
     async fn streams_tokens_then_done() {
         let llm = Arc::new(MockLlmClient::new([MockReply::tokens(&["Bon", "jour"])]));
         let events = run_to_end(backends(llm.clone())).await;
-        assert_eq!(events, vec![token("Bon"), token("jour"), LlmEvent::Done]);
+        assert_eq!(
+            events,
+            vec![
+                LlmEvent::Phase(Phase::Retrieving { collections: 0 }),
+                LlmEvent::Phase(Phase::Connecting),
+                LlmEvent::Phase(Phase::Waiting {
+                    model: "test-model".into()
+                }),
+                token("Bon"),
+                token("jour"),
+                LlmEvent::Done
+            ]
+        );
 
         let requests = llm.requests();
         assert_eq!(requests.len(), 1);
@@ -351,7 +386,16 @@ mod tests {
         let events = run_to_end(backends(llm)).await;
         assert_eq!(
             events,
-            vec![token("ok"), LlmEvent::Usage(usage), LlmEvent::Done]
+            vec![
+                LlmEvent::Phase(Phase::Retrieving { collections: 0 }),
+                LlmEvent::Phase(Phase::Connecting),
+                LlmEvent::Phase(Phase::Waiting {
+                    model: "test-model".into()
+                }),
+                token("ok"),
+                LlmEvent::Usage(usage),
+                LlmEvent::Done
+            ]
         );
     }
 
@@ -361,7 +405,12 @@ mod tests {
         let events = run_to_end(Backends::single("other", llm, Arc::new(NoContext))).await;
         assert_eq!(
             events,
-            vec![LlmEvent::Error("fournisseur inconnu : ollama".into())]
+            vec![
+                // No `Connecting`: the phase belongs to the request going out, and with no
+                // client there is nothing to connect to.
+                LlmEvent::Phase(Phase::Retrieving { collections: 0 }),
+                LlmEvent::Error("fournisseur inconnu : ollama".into())
+            ]
         );
     }
 
@@ -375,9 +424,13 @@ mod tests {
         let events = run_to_end(backends(llm)).await;
         assert_eq!(
             events,
-            vec![LlmEvent::Error(
-                "Ollama injoignable sur http://localhost:11434/v1".into()
-            )]
+            vec![
+                LlmEvent::Phase(Phase::Retrieving { collections: 0 }),
+                // The connection is what failed, so `connexion…` is the last thing said:
+                // `Waiting` only follows a connection that opened.
+                LlmEvent::Phase(Phase::Connecting),
+                LlmEvent::Error("Ollama injoignable sur http://localhost:11434/v1".into())
+            ]
         );
     }
 
@@ -391,6 +444,11 @@ mod tests {
         assert_eq!(
             events,
             vec![
+                LlmEvent::Phase(Phase::Retrieving { collections: 0 }),
+                LlmEvent::Phase(Phase::Connecting),
+                LlmEvent::Phase(Phase::Waiting {
+                    model: "test-model".into()
+                }),
                 token("a"),
                 LlmEvent::Error("erreur du serveur : overloaded".into())
             ]
@@ -406,16 +464,27 @@ mod tests {
         let cancel = CancellationToken::new();
         let task = tokio::spawn(run(backends(llm.clone()), job(), cancel.clone(), tx));
 
-        let first = tokio::time::timeout(Duration::from_secs(1), rx.recv())
-            .await
-            .expect("first token arrives");
-        assert!(matches!(
-            first,
-            Some(Event::App(AppEvent::Llm {
-                event: LlmEvent::Token(_),
-                ..
-            }))
-        ));
+        // The exact sequence up to the first token. A loop that skipped "any number of
+        // phases" would have tolerated a phase emitted in the wrong place — one per tool
+        // round, say — without a word, which is how this test was weakened once already.
+        let expected = [
+            LlmEvent::Phase(Phase::Retrieving { collections: 0 }),
+            LlmEvent::Phase(Phase::Connecting),
+            LlmEvent::Phase(Phase::Waiting {
+                model: "test-model".into(),
+            }),
+            token("a"),
+        ];
+        for want in expected {
+            let event = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+                .await
+                .expect("an event arrives before the timeout")
+                .expect("the channel stays open");
+            let Event::App(AppEvent::Llm { event, .. }) = event else {
+                panic!("the task only sends LLM events, got {event:?}");
+            };
+            assert_eq!(event, want);
+        }
 
         cancel.cancel();
         tokio::time::timeout(Duration::from_secs(1), task)
@@ -451,12 +520,17 @@ mod tests {
             Arc::new(FixedContext(Ok(context.clone()))),
         );
         let events = run_to_end(backends).await;
+        // Skip the pre-token phases: this test cares about the passages' place relative to
+        // the tokens, not about the phases.
+        let first_non_phase = events
+            .iter()
+            .find(|event| !matches!(event, LlmEvent::Phase(_)));
         assert_eq!(
-            events[0],
-            LlmEvent::Retrieved {
+            first_non_phase,
+            Some(&LlmEvent::Retrieved {
                 first_number: 1,
                 chunks: context.chunks
-            },
+            }),
             "retrieved passages are reported first"
         );
         let system = &llm.requests()[0].messages[0];
@@ -475,9 +549,11 @@ mod tests {
         let events = run_to_end(backends).await;
         assert_eq!(
             events,
-            vec![LlmEvent::Error(
-                "contexte indisponible : index missing".into()
-            )]
+            vec![
+                // Retrieval failed, so the request never goes out: no `Connecting` either.
+                LlmEvent::Phase(Phase::Retrieving { collections: 0 }),
+                LlmEvent::Error("contexte indisponible : index missing".into())
+            ]
         );
         assert!(llm.requests().is_empty());
     }
@@ -502,12 +578,112 @@ mod tests {
                 events.push(event);
             }
         }
-        assert_eq!(events, vec![token("- résumé"), LlmEvent::Done]);
+        assert_eq!(
+            events,
+            vec![
+                // A summary connects like any other request, but retrieves nothing: no
+                // `Retrieving`.
+                LlmEvent::Phase(Phase::Connecting),
+                LlmEvent::Phase(Phase::Waiting {
+                    model: "test-model".into()
+                }),
+                token("- résumé"),
+                LlmEvent::Done
+            ]
+        );
         let request = &llm.requests()[0];
         assert!(
             request.messages[1]
                 .content
                 .starts_with("Summarize this conversation")
+        );
+    }
+
+    /// Collects the phases of a run, in order.
+    fn phases(events: Vec<LlmEvent>) -> Vec<Phase> {
+        events
+            .into_iter()
+            .filter_map(|e| match e {
+                LlmEvent::Phase(phase) => Some(phase),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The screen is still until the first token, so the task has to say which wait the
+    /// user is in: retrieving, connecting, or waiting on the model. The order is the order
+    /// of the awaits they describe — `Connecting` is reported around the request going out,
+    /// which is the only await it could ever be seen across.
+    #[tokio::test]
+    async fn the_phases_are_announced_in_order() {
+        let llm = Arc::new(MockLlmClient::new([MockReply::tokens(&["bonjour"])]));
+        let phases = phases(run_to_end(backends(llm)).await);
+        assert_eq!(phases.len(), 3, "{phases:?}");
+        // `NoContext` and a job with no `rag_collection`: zero, so the line will read
+        // "recherche dans les documents…".
+        assert_eq!(phases[0], Phase::Retrieving { collections: 0 });
+        assert_eq!(phases[1], Phase::Connecting);
+        // The model is read from the job rather than hard-coded, so `job()` stays free to
+        // change its fixture.
+        assert_eq!(
+            phases[2],
+            Phase::Waiting {
+                model: job().model.clone()
+            }
+        );
+    }
+
+    /// A tool-using turn re-enters `chat_stream` once per round, and the second request
+    /// carries the tool output — the longest wait of the turn. Every round must announce
+    /// itself, or the screen freezes exactly where it has the most to say.
+    #[tokio::test]
+    async fn every_tool_round_announces_its_own_wait() {
+        let call = ToolCall {
+            id: "c1".into(),
+            // Unknown on purpose: `tools::run` reports it and touches nothing.
+            name: "pas_un_outil".into(),
+            arguments: "{}".into(),
+        };
+        let llm = Arc::new(MockLlmClient::new([
+            MockReply::ToolCalls(vec!["Je regarde.".into()], vec![call]),
+            MockReply::tokens(&["Voilà."]),
+        ]));
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (decisions_tx, decisions) = mpsc::unbounded_channel();
+        // The decision is queued up front: `recv()` picks it up when the call arrives.
+        decisions_tx.send(true).expect("channel open");
+        let tool_job = CompletionJob {
+            tools: true,
+            ..job()
+        };
+        let model = tool_job.model.clone();
+        run_with_tools(
+            backends(llm.clone()),
+            tool_job,
+            CancellationToken::new(),
+            tx,
+            Some(decisions),
+        )
+        .await;
+        let mut events = Vec::new();
+        while let Ok(Event::App(AppEvent::Llm { event, .. })) = rx.try_recv() {
+            if !matches!(event, LlmEvent::Timing { .. }) {
+                events.push(event);
+            }
+        }
+        assert_eq!(llm.requests().len(), 2, "two rounds");
+
+        // The second round starts at its `ToolResult`: everything before that belongs to
+        // the first request.
+        let second_round = events
+            .iter()
+            .position(|e| matches!(e, LlmEvent::ToolResult { .. }))
+            .expect("the tool ran");
+        let after = phases(events[second_round..].to_vec());
+        assert_eq!(
+            after,
+            vec![Phase::Connecting, Phase::Waiting { model }],
+            "the second round must name its own wait: {events:?}"
         );
     }
 }

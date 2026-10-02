@@ -130,13 +130,19 @@ fn render_preview(app: &App, preview: &crate::app::Preview, frame: &mut Frame, a
 }
 
 fn render_welcome(app: &App, frame: &mut Frame, area: Rect) {
+    // `dark_gray` is not a colour: its tone is whatever the terminal's palette says. These
+    // three lines are the first thing a new user sees, and they were the last basic ANSI
+    // colours left in `src/` (see `theme::tests::no_basic_ansi_colour_is_named_in_src`).
+    let dim = Style::default().fg(crate::theme::palette().dim);
     let text = Text::from(vec![
         Line::from("chatatui".bold()),
-        Line::from(format!("modèle : {}", app.model_display())).dark_gray(),
+        Line::styled(format!("modèle : {}", app.model_display()), dim),
         Line::default(),
-        Line::from("Écrivez un message ci-dessous pour commencer.").dark_gray(),
-        Line::from("Tapez / pour les commandes, Ctrl+P pour la palette, F1 pour l'aide.")
-            .dark_gray(),
+        Line::styled("Écrivez un message ci-dessous pour commencer.", dim),
+        Line::styled(
+            "Tapez / pour les commandes, Ctrl+P pour la palette, F1 pour l'aide.",
+            dim,
+        ),
     ])
     .centered();
     let height = u16::try_from(text.height()).unwrap_or(u16::MAX);

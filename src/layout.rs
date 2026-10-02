@@ -19,12 +19,15 @@ pub struct AppLayout {
     pub status: Rect,
 }
 
-/// Area where the conversation text is drawn: the chat area minus one column of padding
-/// on each side.
+/// Area where the conversation text is drawn: the chat area minus one column on the right,
+/// so no line ever touches the edge.
+///
+/// There is no padding on the left: the left margin belongs to the transcript, which reads
+/// role from it (see `transcript::indent`). A column added here would double it and push the
+/// reply off the grid shared with the input and the status bar.
 pub fn chat_content(chat: Rect) -> Rect {
     Rect {
-        x: chat.x.saturating_add(1),
-        width: chat.width.saturating_sub(2),
+        width: chat.width.saturating_sub(1),
         ..chat
     }
 }
@@ -47,7 +50,8 @@ pub fn compute(area: Rect, input_lines: usize, sidebar_open: bool) -> AppLayout 
     };
     let [chat, input] = Layout::vertical([
         Constraint::Min(1),
-        Constraint::Length(lines + 2), // + top and bottom borders
+        // + the rule above the input and the blank row under it (see `app::new_input`).
+        Constraint::Length(lines + 2),
     ])
     .areas(main);
     AppLayout {

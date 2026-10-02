@@ -16,7 +16,7 @@ use std::collections::{BTreeMap, HashMap};
 use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
-    widgets::{Block, BorderType},
+    widgets::{Block, Borders, Padding},
 };
 use ratatui_textarea::{TextArea, WrapMode};
 
@@ -414,6 +414,18 @@ pub struct App {
     /// Makes conversation ids unique across sessions (see [`App::with_session_seed`]).
     session_seed: u64,
     next_conversation: u64,
+    /// Which wait is in progress, and how long it has lasted in ticks. `None` outside a
+    /// wait. The tick count is the only clock `App` has: `update` must stay pure, so
+    /// nothing here reads `Instant::now()`.
+    ///
+    /// Named `wait`, not `waiting`, because `waiting()` is the method that reduces it for
+    /// the renderer — a field and a method of the same name compile but read as a trap.
+    /// Private: `waiting()` is the whole interface, and a caller able to install a phase
+    /// directly would bypass the staleness guard in `on_llm_event`.
+    wait: Option<(crate::llm::Phase, u32)>,
+    /// Ticks since the running generation started, `0` when none is running. Drives the
+    /// spinner glyphs, which must keep turning after `wait` is cleared by the first token.
+    generation_ticks: u32,
 }
 
 impl App {
@@ -502,6 +514,8 @@ impl App {
             request_usage: Usage::default(),
             session_seed: 0,
             next_conversation: 0,
+            wait: None,
+            generation_ticks: 0,
         }
     }
 
@@ -655,6 +669,35 @@ impl App {
         self.generation.is_some()
     }
 
+    /// The waiting line to show, derived from the tick count. `frame` turns about ten times
+    /// a second and the seconds appear only past one, so the value only changes every third
+    /// tick — which is what keeps the redraw off the 30 fps path.
+    ///
+    /// The frame comes from the generation's counter and the seconds from the phase's, so
+    /// that the glyph here and the one in the status bar turn together while the elapsed
+    /// time still restarts at each new phase.
+    pub fn waiting(&self) -> Option<crate::transcript::Waiting> {
+        let (phase, ticks) = self.wait.as_ref()?;
+        Some(crate::transcript::Waiting {
+            phase: phase.clone(),
+            frame: (self.generation_ticks / 3) as usize,
+            elapsed_s: (*ticks >= 30).then(|| ticks / 30),
+        })
+    }
+
+    /// Spinner frame for the status bar while a reply is being generated, `None` when none
+    /// is.
+    ///
+    /// Driven by the tick counter rather than by `waiting()`, which is `None` the moment
+    /// the first token lands: the glyph read as a hung program because it stopped exactly
+    /// where the generation starts. It changes every third tick, so the runtime repaints
+    /// about ten times a second — and, unlike the waiting line, without marking any
+    /// transcript entry dirty, so the 30 fps markdown cap is untouched.
+    pub fn spinner_frame(&self) -> Option<usize> {
+        self.is_generating()
+            .then_some((self.generation_ticks / 3) as usize)
+    }
+
     /// Context the keymap needs to interpret keys.
     pub fn key_context(&self) -> KeyContext {
         KeyContext {
@@ -745,6 +788,7 @@ impl App {
     fn refresh_view(&mut self) {
         let marks = self.version_marks();
         self.transcript.set_marks(marks);
+        self.transcript.set_waiting(self.waiting());
         let width = usize::from(self.chat_area().width);
         self.transcript.refresh(
             self.conversation.messages(),
@@ -1242,7 +1286,19 @@ impl App {
                 self.viewport = Rect::new(0, 0, width, height);
                 Vec::new()
             }
-            Action::Tick => Vec::new(),
+            Action::Tick => {
+                if let Some((_, ticks)) = &mut self.wait {
+                    *ticks = ticks.saturating_add(1);
+                }
+                // Counted for the whole generation, not just the wait: the status bar's
+                // glyph has to turn while tokens stream too, and `wait` is gone by then.
+                self.generation_ticks = if self.generation.is_some() {
+                    self.generation_ticks.saturating_add(1)
+                } else {
+                    0
+                };
+                Vec::new()
+            }
             Action::Init => {
                 let mut effects = self.detect_window();
                 effects.push(Effect::CheckCollections);
@@ -1992,6 +2048,7 @@ impl App {
         self.next_request_id += 1;
         self.request_usage = Usage::default();
         self.timing = None;
+        self.wait = None;
         let job = CompletionJob {
             kind,
             request_id,
@@ -2856,6 +2913,7 @@ impl App {
         let Some(generation) = self.generation else {
             return Vec::new();
         };
+        self.wait = None;
         if matches!(self.overlay, Some(Overlay::ToolConfirm { .. })) {
             self.overlay = None;
         }
@@ -2879,6 +2937,12 @@ impl App {
     /// The model asks to run a tool: closes the reply so far, shows the call as a card
     /// and asks the user (unless they allowed every call of this conversation).
     fn on_tool_call(&mut self, generation: Generation, call: &crate::llm::ToolCall) -> Vec<Effect> {
+        // The reply the wait described is closed just below, and the card takes over the
+        // screen. Leaving the wait in place would keep `waiting()` returning a frame that
+        // changes every third tick, which dirties the card, bumps `revision` and makes the
+        // runtime repaint identical lines ten times a second — for as long as the user
+        // takes to answer the confirmation, and re-running the whole find search each time.
+        self.wait = None;
         let mut effects = Vec::new();
         let written = self
             .conversation
@@ -2917,6 +2981,8 @@ impl App {
 
     /// A tool ran: records its output and starts a new reply message for what follows.
     fn on_tool_result(&mut self, generation: Generation, ok: bool, output: String) -> Vec<Effect> {
+        // Whether it ran or was refused, the wait it was in (if any) is over.
+        self.wait = None;
         if let Some(message) = self.conversation.get_mut(generation.message_id) {
             message.status = if ok {
                 MessageStatus::Complete
@@ -2995,6 +3061,7 @@ impl App {
         }
         match event {
             LlmEvent::Token(token) => {
+                self.wait = None;
                 if let Some(message) = self.conversation.get_mut(generation.message_id) {
                     message.content.push_str(&token);
                 }
@@ -3044,6 +3111,7 @@ impl App {
                 Vec::new()
             }
             LlmEvent::Done if generation.kind == JobKind::Summary => {
+                self.wait = None;
                 self.status =
                     Status::Info("historique résumé : il remplace les messages précédents".into());
                 let mut effects: Vec<Effect> = self
@@ -3057,6 +3125,7 @@ impl App {
                 effects
             }
             LlmEvent::Done => {
+                self.wait = None;
                 self.record_speed_and_cost(generation.message_id);
                 if let Some(input_tokens) = self.request_usage.input_tokens {
                     self.measured = Some(Measured {
@@ -3092,11 +3161,24 @@ impl App {
                 effects
             }
             LlmEvent::Error(error) => {
+                self.wait = None;
                 self.status = Status::Error(error.clone());
                 self.restore_queued(&error);
                 self.finish_generation(MessageStatus::Failed(error))
                     .into_iter()
                     .collect()
+            }
+            LlmEvent::Phase(phase) => {
+                // A phase arriving after the first token is stale: the reply is already on
+                // screen and a waiting line would contradict it.
+                let started = self
+                    .conversation
+                    .get(generation.message_id)
+                    .is_some_and(|m| !m.content.is_empty());
+                if !started {
+                    self.wait = Some((phase, 0));
+                }
+                Vec::new()
             }
         }
     }
@@ -3432,10 +3514,18 @@ fn title_from(text: &str) -> String {
 fn new_input() -> TextArea<'static> {
     let mut input = TextArea::default();
     input.set_block(
-        Block::bordered()
-            .border_type(BorderType::Rounded)
+        // One rule above the input, not a box around it. The padding gives back the three
+        // rows and columns the missing borders would have taken, so the inner area — and
+        // with it the textarea's height — is exactly what `Block::bordered()` gave and
+        // `layout::compute` still reserves.
+        Block::new()
+            .borders(Borders::TOP)
+            .padding(Padding::new(1, 1, 0, 1))
             .border_style(Style::default().fg(crate::theme::palette().dim))
-            .title(" Message "),
+            // The title carries its own left end of the rule: a title starting at column 0
+            // would both break the rule there and, under a centred popup that leaves the
+            // first columns uncovered, show as a stray `M` beside the popup's border.
+            .title("── Message "),
     );
     input.set_placeholder_text("Écrivez votre message…");
     input.set_placeholder_style(Style::default().fg(crate::theme::palette().dim));
@@ -3668,7 +3758,7 @@ mod tests {
             .iter()
             .map(|l| l.to_string())
             .collect();
-        assert!(visible.contains(&"Bonjour▍".to_owned()));
+        assert!(visible.contains(&"  Bonjour▍".to_owned()));
     }
 
     #[test]
@@ -4069,7 +4159,9 @@ mod tests {
         assert_eq!(app.conversation_id, Some(ConversationId("old".into())));
         assert_eq!(app.model, "qwen2.5", "the conversation's model is restored");
         assert!(app.sidebar.is_none());
-        assert_eq!(app.transcript.total_lines(), 6, "re-rendered from scratch");
+        // 1 user turn (leading blank + body + trailing blank) + 1 reply (body + trailing
+        // blank).
+        assert_eq!(app.transcript.total_lines(), 5, "re-rendered from scratch");
 
         // New messages continue the numbering and the stored conversation.
         let saved = saved(&submit(&mut app, "Suite"));
@@ -5843,5 +5935,206 @@ mod tests {
         assert_eq!(format_cost(1_240_000, "$"), "1,24 $");
         app.update(Action::NewConversation);
         assert_eq!(app.conversation_cost, None);
+    }
+
+    /// Time must come from the tick count, never from a clock inside `App`: that is what
+    /// makes this deterministic. Thirty ticks is one second at `TICK_FPS = 30`.
+    #[test]
+    fn the_waiting_clock_is_driven_by_ticks() {
+        let mut app = sized_app();
+        let job = send(&mut app, "Raconte");
+        app.update(Action::Llm {
+            request_id: job.request_id,
+            event: LlmEvent::Phase(crate::llm::Phase::Connecting),
+        });
+        assert_eq!(app.waiting().map(|w| w.elapsed_s), Some(None));
+
+        for _ in 0..29 {
+            app.update(Action::Tick);
+        }
+        assert_eq!(
+            app.waiting().and_then(|w| w.elapsed_s),
+            None,
+            "under a second, no number"
+        );
+        app.update(Action::Tick);
+        assert_eq!(app.waiting().and_then(|w| w.elapsed_s), Some(1));
+    }
+
+    /// The frame advances every third tick, not every tick: ten frames a second, and the
+    /// 30 fps markdown cap survives.
+    #[test]
+    fn the_frame_advances_every_third_tick() {
+        let mut app = sized_app();
+        let job = send(&mut app, "Raconte");
+        app.update(Action::Llm {
+            request_id: job.request_id,
+            event: LlmEvent::Phase(crate::llm::Phase::Connecting),
+        });
+        let frame = app.waiting().map(|w| w.frame).expect("waiting");
+        app.update(Action::Tick);
+        app.update(Action::Tick);
+        assert_eq!(app.waiting().map(|w| w.frame), Some(frame), "same frame");
+        app.update(Action::Tick);
+        assert_eq!(app.waiting().map(|w| w.frame), Some(frame + 1));
+    }
+
+    /// Review Focus 4: a phase that arrives late must not resurrect a waiting line on a
+    /// reply that is already streaming or finished.
+    #[test]
+    fn a_late_phase_does_not_resurrect_the_waiting_line() {
+        let mut app = sized_app();
+        let job = send(&mut app, "Raconte");
+        token(&mut app, job.request_id, "Il était");
+        assert!(app.waiting().is_none(), "the first token clears it");
+
+        app.update(Action::Llm {
+            request_id: job.request_id,
+            event: LlmEvent::Phase(crate::llm::Phase::Retrieving { collections: 2 }),
+        });
+        assert!(
+            app.waiting().is_none(),
+            "a phase after the first token is stale"
+        );
+    }
+
+    /// Done, Error and cancellation all end the wait.
+    #[test]
+    fn finishing_clears_the_waiting_line() {
+        for event in [LlmEvent::Done, LlmEvent::Error("panne".to_owned())] {
+            let mut app = sized_app();
+            let job = send(&mut app, "Raconte");
+            app.update(Action::Llm {
+                request_id: job.request_id,
+                event: LlmEvent::Phase(crate::llm::Phase::Connecting),
+            });
+            assert!(app.waiting().is_some());
+            app.update(Action::Llm {
+                request_id: job.request_id,
+                event,
+            });
+            assert!(app.waiting().is_none());
+        }
+
+        let mut app = sized_app();
+        let job = send(&mut app, "Raconte");
+        app.update(Action::Llm {
+            request_id: job.request_id,
+            event: LlmEvent::Phase(crate::llm::Phase::Connecting),
+        });
+        app.update(Action::Cancel);
+        assert!(app.waiting().is_none(), "Esc ends the wait");
+    }
+
+    /// A phase can still be in flight when the reply ends: the task sends them, the app
+    /// reads them a moment later. One arriving after `Done` must not bring a waiting line
+    /// back onto a finished reply — the guard is `finish_generation` taking `generation`,
+    /// and nothing tested it.
+    #[test]
+    fn a_phase_after_done_does_not_resurrect_the_waiting_line() {
+        let mut app = sized_app();
+        let job = send(&mut app, "Raconte");
+        token(&mut app, job.request_id, "Il était");
+        llm(&mut app, job.request_id, LlmEvent::Done);
+        assert!(!app.is_generating());
+
+        llm(
+            &mut app,
+            job.request_id,
+            LlmEvent::Phase(crate::llm::Phase::Retrieving { collections: 2 }),
+        );
+        assert!(
+            app.waiting().is_none(),
+            "a phase after Done is stale: the reply is finished"
+        );
+        let text = app.transcript.line_texts().join("\n");
+        assert!(!text.contains("recherche"), "{text}");
+        assert_eq!(last(&app).content, "Il était", "the reply is untouched");
+    }
+
+    /// A tool confirmation takes over the screen and can be held open indefinitely. The
+    /// wait it replaced must be cleared, or `waiting()` keeps producing a new frame every
+    /// third tick, which dirties the card and makes the runtime repaint identical lines ten
+    /// times a second — and re-run the whole find search with them.
+    #[test]
+    fn a_pending_tool_confirmation_does_not_redraw() {
+        let mut config = Config::default();
+        config.tools.enabled = true;
+        let mut app = App::new(&config, false);
+        app.update(Action::Resize {
+            width: 60,
+            height: 14,
+        });
+        let job = send(&mut app, "Que dit mon plan ?");
+        llm(
+            &mut app,
+            job.request_id,
+            LlmEvent::Phase(crate::llm::Phase::Waiting {
+                model: "llama3.2".into(),
+            }),
+        );
+        assert!(app.waiting().is_some(), "the wait is on screen");
+        llm(
+            &mut app,
+            job.request_id,
+            LlmEvent::ToolCall(crate::llm::ToolCall {
+                id: "c1".into(),
+                name: "read_file".into(),
+                arguments: r#"{"path":"~/cours/plan.md"}"#.into(),
+            }),
+        );
+        assert!(
+            matches!(app.overlay, Some(Overlay::ToolConfirm { .. })),
+            "the confirmation is open"
+        );
+        assert!(app.waiting().is_none(), "the card took over the screen");
+
+        let before = app.transcript.revision();
+        let lines = app.transcript.line_texts();
+        for _ in 0..300 {
+            app.update(Action::Tick);
+        }
+        assert_eq!(
+            app.transcript.revision(),
+            before,
+            "ten seconds of a pending confirmation must not move the revision"
+        );
+        assert_eq!(app.transcript.line_texts(), lines, "nothing changed either");
+    }
+
+    /// The status bar's glyph must turn for the whole generation. It used to read its frame
+    /// from `waiting()`, which the first token clears, so it froze exactly where the
+    /// generation begins. It turns without dirtying the transcript, which is what keeps the
+    /// 30 fps markdown cap.
+    #[test]
+    fn the_status_spinner_turns_throughout_the_generation() {
+        let mut app = sized_app();
+        let job = send(&mut app, "Raconte");
+        token(&mut app, job.request_id, "Il");
+        assert!(app.waiting().is_none(), "the wait ended at the first token");
+
+        // The first tick renders the token that arrived; from then on nothing is dirty.
+        app.update(Action::Tick);
+        let revision = app.transcript.revision();
+        let mut frames = vec![app.spinner_frame().expect("generating")];
+        for _ in 0..11 {
+            app.update(Action::Tick);
+            frames.push(app.spinner_frame().expect("generating"));
+        }
+        // Ten frames a second, not thirty: one step every third tick. (The first tick above
+        // already counted, so the run starts two ticks into frame 0.)
+        assert_eq!(
+            frames,
+            vec![0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3, 4],
+            "{frames:?}"
+        );
+        assert_eq!(
+            app.transcript.revision(),
+            revision,
+            "the transcript must not be dirtied on every tick"
+        );
+
+        llm(&mut app, job.request_id, LlmEvent::Done);
+        assert_eq!(app.spinner_frame(), None, "no glyph outside a generation");
     }
 }

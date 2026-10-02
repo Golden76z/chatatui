@@ -11,7 +11,7 @@ use super::{
     wrap::{display_width, wrap_plain, wrap_spans},
 };
 
-const BULLETS: [&str; 3] = ["• ", "◦ ", "▪ "];
+const BULLETS: [&str; 3] = ["· ", "◦ ", "▪ "];
 
 fn dim() -> Style {
     Style::default().fg(crate::theme::palette().dim)
@@ -24,10 +24,9 @@ fn inline_code() -> Style {
 fn heading_style(level: HeadingLevel) -> Style {
     let bold = Style::default().add_modifier(Modifier::BOLD);
     match level {
-        HeadingLevel::H1 => bold
-            .fg(crate::theme::palette().accent)
-            .add_modifier(Modifier::UNDERLINED),
-        HeadingLevel::H2 => bold.fg(crate::theme::palette().accent),
+        // The rule under H1 and H2 carries the hierarchy; the text itself stays
+        // monochrome so a reply does not read as three competing colours.
+        HeadingLevel::H1 | HeadingLevel::H2 => bold,
         _ => bold,
     }
 }
@@ -276,9 +275,22 @@ impl Renderer {
     fn end(&mut self, tag: TagEnd) {
         match tag {
             TagEnd::Paragraph | TagEnd::HtmlBlock => self.end_block(),
-            TagEnd::Heading(_) => {
+            TagEnd::Heading(level) => {
+                // The width of the heading's own text, before `flush_inline` clears it.
+                let columns: usize = self
+                    .inline
+                    .iter()
+                    .map(|span| display_width(&span.content))
+                    .sum();
                 self.flush_inline();
                 self.pop_style();
+                if matches!(level, HeadingLevel::H1 | HeadingLevel::H2) && columns > 0 {
+                    let available = self.width.saturating_sub(self.prefix_width()).max(1);
+                    self.emit(vec![Span::styled(
+                        "─".repeat(columns.min(available)),
+                        dim(),
+                    )]);
+                }
                 self.end_block();
             }
             TagEnd::BlockQuote(_) => {
@@ -441,10 +453,9 @@ impl Renderer {
                     if *marker_shown {
                         spans.push(Span::raw(" ".repeat(display_width(marker))));
                     } else {
-                        spans.push(Span::styled(
-                            marker.clone(),
-                            Style::default().fg(crate::theme::palette().info),
-                        ));
+                        // `dim`, like the quote bar beside it: a bullet is structure, and
+                        // the one accent is reserved for interaction and selection.
+                        spans.push(Span::styled(marker.clone(), dim()));
                         *marker_shown = true;
                     }
                 }
@@ -465,23 +476,39 @@ impl Renderer {
     }
 
     fn render_code(&mut self, code: &CodeBlock) {
-        const GUTTER: &str = "▎ ";
-        let gutter = || Span::styled(GUTTER, dim());
+        // The block is set in from the text, with no per-line marker: the indent and the
+        // syntax colours say it is code. The label line above carries the language and,
+        // when the reply holds several blocks, the number `/copy code N` needs.
+        const INDENT: &str = "    ";
+        let indent = || Span::raw(INDENT);
         let available = self
             .width
-            .saturating_sub(self.prefix_width() + display_width(GUTTER))
+            .saturating_sub(self.prefix_width() + display_width(INDENT))
             .max(1);
         let lang = code.lang.trim();
         self.code_count += 1;
-        let number = self.number_code.then(|| format!("#{}", self.code_count));
-        let label = match (lang.is_empty(), number) {
-            (false, Some(number)) => Some(format!("{lang} · {number}")),
-            (false, None) => Some(lang.to_owned()),
-            (true, number) => number,
-        };
-        if let Some(label) = label {
-            let label = Span::styled(label, dim().add_modifier(Modifier::ITALIC));
-            self.emit(vec![gutter(), label]);
+        let number = self.number_code.then(|| format!("[{}]", self.code_count));
+        match (lang.is_empty(), number) {
+            (true, None) => {} // Nothing to label: no line.
+            (_, Some(right)) => {
+                // Several blocks: right-align the number so `/copy code N` reads at a
+                // glance. The language (possibly empty) sits at the left.
+                let label_width = self.width.saturating_sub(self.prefix_width() + 2).max(1);
+                let gap = label_width
+                    .saturating_sub(display_width(lang) + display_width(&right))
+                    .max(1);
+                self.emit(vec![
+                    Span::raw("  "),
+                    Span::styled(lang.to_owned(), dim()),
+                    Span::raw(" ".repeat(gap)),
+                    Span::styled(right, dim()),
+                ]);
+            }
+            (false, None) => {
+                // A single block: just the language, with nothing to right-align against,
+                // so the line ends there instead of padding out to the pane edge.
+                self.emit(vec![Span::raw("  "), Span::styled(lang.to_owned(), dim())]);
+            }
         }
         let highlighted = if self.code_closed {
             highlight_cached(&code.text, lang)
@@ -490,7 +517,7 @@ impl Renderer {
         };
         for source_line in highlighted {
             for wrapped in wrap_plain(&source_line, available) {
-                let mut spans = vec![gutter()];
+                let mut spans = vec![indent()];
                 spans.extend(wrapped);
                 self.emit(spans);
             }
@@ -669,7 +696,7 @@ Fin."#;
         );
         assert_eq!(
             span(&lines, "code").style.fg,
-            Some(ratatui::style::Color::Yellow)
+            Some(crate::theme::palette().warn)
         );
         assert!(
             span(&lines, "barré")
@@ -688,12 +715,11 @@ Fin."#;
 
     #[test]
     fn headings_are_styled() {
+        // Headings are weight only now; the rule (tested separately) carries the hierarchy
+        // that colour used to.
         let lines = render("# Un\n\n### Trois", 80);
         let h1 = span(&lines, "Un").style;
-        assert!(
-            h1.add_modifier
-                .contains(Modifier::BOLD | Modifier::UNDERLINED)
-        );
+        assert!(h1.add_modifier.contains(Modifier::BOLD));
         assert!(
             span(&lines, "Trois")
                 .style
@@ -705,7 +731,7 @@ Fin."#;
     #[test]
     fn list_continuation_lines_are_indented() {
         let lines = render("- un deux trois quatre", 10);
-        assert_eq!(text(&lines), "• un deux\n  trois\n  quatre");
+        assert_eq!(text(&lines), "· un deux\n  trois\n  quatre");
     }
 
     #[test]
@@ -714,9 +740,11 @@ Fin."#;
     }
 
     #[test]
-    fn code_block_is_highlighted_with_gutter() {
+    fn code_block_is_highlighted_and_indented() {
         let lines = render("```rust\nlet x = 1;\n```", 80);
-        assert_eq!(text(&lines), "▎ rust\n▎ let x = 1;");
+        // A single block has no number to right-align against, so the label line ends
+        // after the language — no padding out to the pane edge.
+        assert_eq!(text(&lines), "  rust\n    let x = 1;");
         assert!(matches!(
             span(&lines, "let").style.fg,
             Some(ratatui::style::Color::Rgb(..))
@@ -726,13 +754,14 @@ Fin."#;
     #[test]
     fn unterminated_code_block_while_streaming() {
         let lines = render("Voici :\n\n```python\nprint('a')\nfor", 80);
-        assert_eq!(text(&lines), "Voici :\n\n▎ python\n▎ print('a')\n▎ for");
+        assert_eq!(text(&lines), "Voici :\n\n  python\n    print('a')\n    for");
     }
 
     #[test]
     fn long_code_lines_are_hard_wrapped() {
+        // No language and a single block: no label line at all, just the indented code.
         let lines = render("```\nabcdefghij\n```", 7);
-        assert_eq!(text(&lines), "▎ abcde\n▎ fghij");
+        assert_eq!(text(&lines), "    abc\n    def\n    ghi\n    j");
     }
 
     #[test]
@@ -775,12 +804,113 @@ Fin."#;
             .iter()
             .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
             .collect();
-        assert!(text.contains(&"▎ rust · #1".to_owned()), "{text:?}");
-        assert!(text.contains(&"▎ #2".to_owned()));
+        // The number sits at the right of the label line, the language (when there is one)
+        // at the left.
+        assert!(
+            text.contains(&format!("  rust{}[1]", " ".repeat(31))),
+            "{text:?}"
+        );
+        assert!(text.contains(&format!("{}[2]", " ".repeat(37))), "{text:?}");
         let single: Vec<String> = render("```rust\nx\n```", 40)
             .iter()
             .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
             .collect();
-        assert_eq!(single[0], "▎ rust", "a single block is not numbered");
+        assert_eq!(single[0], "  rust", "a single block is not numbered");
+    }
+
+    /// A heading is weight plus a rule the width of its own text — not a colour.
+    #[test]
+    fn a_heading_is_followed_by_a_rule_its_own_width() {
+        let lines = render("## Tri en Rust\n\ntexte", 60);
+        let text: Vec<String> = lines.iter().map(ToString::to_string).collect();
+        let title = text
+            .iter()
+            .position(|l| l.contains("Tri en Rust"))
+            .expect("the heading is rendered");
+        let rule = text[title + 1].trim_end();
+        assert_eq!(rule, "─".repeat("Tri en Rust".chars().count()), "{text:?}");
+    }
+
+    /// The code block loses its per-line gutter and keeps its label line, because
+    /// `/copy code N` is unusable when the numbers are invisible.
+    #[test]
+    fn a_code_block_is_indented_without_a_gutter() {
+        let lines = render("```rust\nlet v = 1;\n```\n", 60);
+        let text: Vec<String> = lines.iter().map(ToString::to_string).collect();
+        assert!(
+            text.iter().all(|l| !l.contains('▎')),
+            "the gutter is gone: {text:?}"
+        );
+        let code = text
+            .iter()
+            .find(|l| l.contains("let v = 1;"))
+            .expect("the code is rendered");
+        assert!(code.starts_with("    "), "code is indented: {code:?}");
+    }
+
+    /// A single block has nothing to right-align a number against, so its label line must
+    /// not be padded out to the pane edge: that would make the line unselectable and would
+    /// turn every plain code block's label into noise in a snapshot diff.
+    #[test]
+    fn a_single_code_blocks_label_has_no_trailing_whitespace() {
+        let lines = render("```rust\nlet v = 1;\n```\n", 60);
+        let label = lines
+            .iter()
+            .map(ToString::to_string)
+            .find(|l| l.trim() == "rust")
+            .expect("the label line is rendered");
+        assert_eq!(label, "  rust", "trailing whitespace: {label:?}");
+    }
+
+    /// With several blocks the number is shown at the right of the label line; with one it
+    /// is not shown at all.
+    #[test]
+    fn the_block_number_appears_only_when_there_are_several() {
+        let one = render("```rust\na\n```\n", 60)
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!one.contains('['), "{one}");
+
+        let two = render("```rust\na\n```\n\n```sh\nb\n```\n", 60)
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(two.contains("[1]"), "{two}");
+        assert!(two.contains("[2]"), "{two}");
+    }
+
+    /// Lists use `·`, the calmest marker available.
+    #[test]
+    fn a_list_uses_a_middle_dot() {
+        let text = render("- plus rapide\n- pas d'allocation\n", 60)
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("· plus rapide"), "{text}");
+        assert!(!text.contains('•'), "{text}");
+    }
+
+    /// The marker is `dim`, like the quote bar: the one accent is for interaction and
+    /// selection, and a bullet on every line of every list is neither. No snapshot records
+    /// colour, so this is the only place the regression can be caught.
+    #[test]
+    fn the_list_marker_is_dim() {
+        for (source, marker) in [
+            ("- plus rapide\n", "· "),
+            ("- a\n  - b\n", "◦ "),
+            ("1. premier\n", "1. "),
+            ("> cité\n", "│ "),
+        ] {
+            let lines = render(source, 60);
+            assert_eq!(
+                span(&lines, marker).style,
+                dim(),
+                "{marker:?} must be dim: {lines:?}"
+            );
+        }
     }
 }

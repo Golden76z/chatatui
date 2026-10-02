@@ -1,6 +1,5 @@
 ---
 source: src/ui/mod.rs
-assertion_line: 666
 expression: "draw(&mut app, 80, 14).backend()"
 ---
 "                                                                                "
@@ -13,7 +12,7 @@ expression: "draw(&mut app, 80, 14).backend()"
 "      │                                                                  │      "
 "      │ Qwen3-0.6B-Q4_K_M.gguf                                    397 Mo │      "
 "      │▌Qwen3-0.6B-Q8_0.gguf                                      609 Mo │      "
-"╭ Mess╰────────────────────────────── Entrée télécharger · Échap annuler ╯─────╮"
-"│ Écrivez votre message…                                                       │"
-"╰──────────────────────────────────────────────────────────────────────────────╯"
+"── Mes╰────────────────────────────── Entrée télécharger · Échap annuler ╯──────"
+"  Écrivez votre message…                                                        "
+"                                                                                "
 " ● Prêt │ Ollama › llama3.2          ↑↓ choisir · Entrée valider · Échap fermer "

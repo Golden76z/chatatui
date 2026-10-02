@@ -22,8 +22,14 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
             .live_speed()
             .map(|s| format!(" {s} t/s"))
             .unwrap_or_default();
+        // The glyph was fixed, which reads as a hung program. It turns for the whole
+        // generation, on the same clock as the waiting line, so the two never disagree —
+        // reading it from `waiting()` would have frozen it at the first token, which is
+        // where the generation begins.
+        const FRAMES: [&str; 4] = ["◐", "◓", "◑", "◒"];
+        let frame = app.spinner_frame().unwrap_or(0) % FRAMES.len();
         (
-            format!("◐ Génération…{speed}"),
+            format!("{} Génération…{speed}", FRAMES[frame]),
             crate::theme::palette().warn,
         )
     } else {

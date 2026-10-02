@@ -11,7 +11,7 @@ use ratatui::{
 use crate::{
     app::{App, Comparison},
     state::{Message, Overlay},
-    transcript::message_lines,
+    transcript::{Waiting, message_lines_marked},
 };
 
 /// The popup: the whole screen but a one-cell margin.
@@ -47,11 +47,15 @@ fn sides<'a>(app: &'a App, comparison: &Comparison) -> [&'a [Message]; 2] {
 }
 
 /// Display lines of `messages` for a column of `width` cells.
-fn side_lines(messages: &[Message], width: u16) -> Vec<Line<'static>> {
+///
+/// `waiting` has to be threaded through: `/compare` starts a job like any other, so the
+/// waiting line was being drawn into the main transcript, on the rows the popup covers,
+/// while the column the user is actually looking at showed a bare cursor.
+fn side_lines(messages: &[Message], width: u16, waiting: Option<&Waiting>) -> Vec<Line<'static>> {
     let width = usize::from(width).max(1);
     let mut lines: Vec<Line<'static>> = messages
         .iter()
-        .flat_map(|m| message_lines(m, width))
+        .flat_map(|m| message_lines_marked(m, width, None, waiting))
         .collect();
     if lines.is_empty() {
         lines.push(Line::styled(
@@ -88,9 +92,10 @@ pub fn max_scroll(app: &App) -> u16 {
     let area = popup_area(app.viewport);
     let [left, right] = columns(area);
     let [a, b] = sides(app, comparison);
-    let longest = side_lines(a, left.width)
+    let waiting = app.waiting();
+    let longest = side_lines(a, left.width, waiting.as_ref())
         .len()
-        .max(side_lines(b, right.width).len());
+        .max(side_lines(b, right.width, waiting.as_ref()).len());
     u16::try_from(longest.saturating_sub(body_height(app.viewport))).unwrap_or(u16::MAX)
 }
 
@@ -144,6 +149,7 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
         ),
     ];
     let offset = usize::from(*scroll);
+    let waiting = app.waiting();
     for ((column, messages), label) in [left, right].into_iter().zip([a, b]).zip(labels) {
         let [head, _, body] = Layout::vertical([
             Constraint::Length(1),
@@ -161,7 +167,7 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
             )),
             head,
         );
-        let lines: Vec<Line<'static>> = side_lines(messages, body.width)
+        let lines: Vec<Line<'static>> = side_lines(messages, body.width, waiting.as_ref())
             .into_iter()
             .skip(offset)
             .take(usize::from(body.height))

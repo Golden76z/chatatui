@@ -28,8 +28,12 @@
   hand-picked set of well-known GGUF repositories (`Entrée` downloads, `Suppr` deletes),
   `/pull` downloads from HuggingFace (resumable, sha256-checked) and the file's own header
   supplies the metadata. Downloading and inspecting only: nothing runs the models yet.
+- **J33**: editorial visual direction — both palettes pin indexed tones, role is read from
+  position instead of a coloured header, the markdown vocabulary is reduced to weight,
+  rules and indentation, and the application names the wait it is in before the first
+  token (phase, turning glyph, seconds) instead of freezing.
 
 ## Next
 
-- Running local models: GGUF tokenizer and inference (J33).
+- Running local models: GGUF tokenizer and inference.
 - MCP over HTTP (remote servers), and `tools/list_changed` notifications.

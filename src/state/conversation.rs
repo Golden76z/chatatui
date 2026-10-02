@@ -95,6 +95,22 @@ pub struct Message {
     pub image: Option<Image>,
 }
 
+impl Message {
+    /// A complete message with no source, citations or image — the shape most tests need,
+    /// overriding `status` (and other fields) afterwards when they need something else.
+    pub fn new(id: MessageId, role: Role, content: impl Into<String>) -> Self {
+        Self {
+            id,
+            role,
+            content: content.into(),
+            status: MessageStatus::Complete,
+            source: None,
+            citations: Vec::new(),
+            image: None,
+        }
+    }
+}
+
 /// An ordered list of messages, and where the model's context starts.
 ///
 /// Messages before `context_start` (after `/clear` or `/compact`) stay visible but are no
@@ -247,6 +263,13 @@ impl Conversation {
         self.messages.retain(|m| m.id < from);
     }
 
+    /// Read-only access to a message by id.
+    pub fn get(&self, id: MessageId) -> Option<&Message> {
+        // Ids are increasing, so the message is found by binary search.
+        let index = self.messages.binary_search_by_key(&id, |m| m.id).ok()?;
+        self.messages.get(index)
+    }
+
     /// Mutable access to a message by id.
     pub fn get_mut(&mut self, id: MessageId) -> Option<&mut Message> {
         // Ids are increasing, so the message is found by binary search.
@@ -294,6 +317,8 @@ mod tests {
         }
         assert_eq!(conversation.messages()[1].content, "hi");
         assert!(conversation.get_mut(MessageId(99)).is_none());
+        assert_eq!(conversation.get(id).map(|m| m.content.as_str()), Some("hi"));
+        assert!(conversation.get(MessageId(99)).is_none());
     }
 
     #[test]
