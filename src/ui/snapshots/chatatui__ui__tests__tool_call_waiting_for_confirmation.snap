@@ -5,7 +5,7 @@ expression: "draw(&mut app, 80, 16).backend()"
 "                                                                                "
 "        Que dit mon plan ?                                                      "
 "                                                                                "
-"  Je regarde.                                                                   "
+"✳ Je regarde.                                                                   "
 "                                                                                "
 "  outil         ╭ Autoriser l'outil ? ──────────────────────────╮               "
 "  🔧 lire ~/cour│ Le modèle veut lire ~/cours/plan.md           │               " Hidden by multi-width symbols: [(3, " ")]

@@ -27,6 +27,17 @@ struct Entry {
 /// beside it carries the meaning for the fonts that do not.
 pub const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
+/// The assistant's mark, drawn in the two-column gutter that `indent` reserves for a reply.
+///
+/// This is the one role marker the editorial direction keeps, and it is affordable only
+/// because it costs nothing: the margin is already there, so the glyph adds no line and no
+/// column. It opens a *turn*, not a message — see [`opens_a_turn`].
+///
+/// U+2733 is East Asian Width *Neutral*, so it is one cell everywhere. A glyph of *ambiguous*
+/// width would be one cell in some terminals and two in others, shunting every reply's text
+/// out of alignment; `the_avatar_is_one_cell_wide` is the guard on that.
+pub const AVATAR: &str = "✳";
+
 /// What the application is doing while no token has arrived yet.
 ///
 /// `frame` and `elapsed_s` are already reduced from `App`'s tick counter, which is
@@ -181,7 +192,10 @@ impl Transcript {
                     .iter()
                     .find(|m| m.0 == message.id)
                     .map(|m| (m.1, m.2));
-                let body = message_lines_marked(message, width, mark, self.waiting.as_ref());
+                let mut body = message_lines_marked(message, width, mark, self.waiting.as_ref());
+                if opens_a_turn(message.role, i.checked_sub(1).map(|p| messages[p].role)) {
+                    body = with_avatar(body);
+                }
                 if in_context {
                     lines.extend(body);
                 } else {
@@ -390,6 +404,36 @@ fn label(role: Role) -> Option<&'static str> {
 
 /// Shifts every line right by `columns`, leaving blank lines blank so no trailing spaces
 /// land in the snapshots.
+/// Whether this message opens a turn, and so carries the [`AVATAR`].
+///
+/// A reply resumed after a tool round — or split across two messages — is still the same turn,
+/// so only the first is marked. The avatar says "the assistant is speaking", not "a message
+/// begins". This reads the *previous* message's role, which never changes once an entry exists,
+/// so it is safe against the per-entry render cache.
+fn opens_a_turn(role: Role, previous: Option<Role>) -> bool {
+    role == Role::Assistant && !previous.is_some_and(|p| matches!(p, Role::Assistant | Role::Tool))
+}
+
+/// Puts the [`AVATAR`] in the left margin of the first drawn line, keeping the text where it
+/// was. The margin is pure whitespace produced by [`shift`]; anything else is left alone rather
+/// than overwritten.
+fn with_avatar(mut lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
+    let accent = Style::default().fg(crate::theme::palette().accent);
+    let Some(line) = lines.iter_mut().find(|l| !l.spans.is_empty()) else {
+        return lines;
+    };
+    let pad = line.spans[0].content.chars().count();
+    if !line.spans[0].content.trim().is_empty() || pad < 2 {
+        return lines;
+    }
+    // The avatar plus its separating space occupy the first two columns; a wider margin keeps
+    // the remainder, so the text does not move.
+    line.spans[0] = Span::raw(" ".repeat(pad - 2));
+    line.spans
+        .splice(0..0, [Span::styled(format!("{AVATAR} "), accent)]);
+    lines
+}
+
 fn shift(lines: Vec<Line<'static>>, columns: usize) -> Vec<Line<'static>> {
     let pad = " ".repeat(columns);
     lines
@@ -558,7 +602,7 @@ mod tests {
         t.invalidate(last);
         assert!(t.refresh(c.messages(), 40, 0));
         assert_eq!(t.last_rendered(), 1);
-        assert_eq!(text(&t.visible(8, 2)), vec!["  Il était▍", ""]);
+        assert_eq!(text(&t.visible(8, 2)), vec!["✳ Il était▍", ""]);
 
         assert!(!t.refresh(c.messages(), 40, 0), "nothing changed");
         assert_eq!(t.last_rendered(), 0);
@@ -577,7 +621,7 @@ mod tests {
         assert_eq!(text(&t.visible(4, 1)), vec!["  ‹ 2/3 ›  Alt+← Alt+→"]);
         t.set_marks(Vec::new());
         t.refresh(c.messages(), 60, 0);
-        assert_eq!(text(&t.visible(3, 1)), vec!["  Salut !"]);
+        assert_eq!(text(&t.visible(3, 1)), vec!["✳ Salut !"]);
     }
 
     #[test]
@@ -895,7 +939,13 @@ mod tests {
             .into_iter()
             .find(|l| l.contains("réfléchit"))
             .expect("the line is there");
-        assert!(line.starts_with("  "), "at column 2: {line:?}");
+        // The gutter now carries the avatar, so pin what this test was always about: the
+        // content begins at column 2, exactly where the reply's text will land.
+        assert_eq!(
+            line.chars().nth(2),
+            Some('⠋'),
+            "the content starts at column 2: {line:?}"
+        );
     }
 
     /// Once a token has arrived the message is no longer empty, and the waiting line has no
@@ -1079,5 +1129,117 @@ mod tests {
             "{all:?}"
         );
         assert!(!all.join("\n").contains("recherche dans"), "{all:?}");
+    }
+
+    /// The avatar lives in the two-column gutter `indent` already reserves for a reply, so it
+    /// costs neither a line nor a column of its own.
+    #[test]
+    fn the_avatar_opens_a_reply() {
+        let mut transcript = Transcript::default();
+        transcript.refresh(
+            &[user("Comment trier un Vec ?"), assistant("Utilise sort.")],
+            60,
+            0,
+        );
+        let line = transcript
+            .line_texts()
+            .into_iter()
+            .find(|l| l.contains("Utilise sort."))
+            .expect("the reply is there");
+        assert_eq!(
+            line.trim_end(),
+            format!("{AVATAR} Utilise sort."),
+            "avatar at column 0, text still at column 2: {line:?}"
+        );
+    }
+
+    /// A reply resumed after a tool round is the same turn, so it is not marked again — the
+    /// avatar says "the assistant is speaking", not "a message begins".
+    #[test]
+    fn a_reply_resumed_after_a_tool_has_no_second_avatar() {
+        let mut tool = Message::new(MessageId(3), Role::Tool, "lu".to_owned());
+        tool.source = Some("read_file".to_owned());
+        let messages = [
+            Message::new(MessageId(1), Role::User, "Lis x".to_owned()),
+            Message::new(MessageId(2), Role::Assistant, "Je regarde.".to_owned()),
+            tool,
+            Message::new(MessageId(4), Role::Assistant, "Voilà.".to_owned()),
+        ];
+        let mut transcript = Transcript::default();
+        transcript.refresh(&messages, 60, 0);
+
+        let all = transcript.line_texts().join("\n");
+        assert_eq!(
+            all.matches(AVATAR).count(),
+            1,
+            "one avatar for the whole turn: {all}"
+        );
+    }
+
+    #[test]
+    fn a_question_never_carries_the_avatar() {
+        let mut transcript = Transcript::default();
+        transcript.refresh(&[user("Et ça ?")], 60, 0);
+
+        let all = transcript.line_texts().join("\n");
+        assert!(!all.contains(AVATAR), "{all}");
+    }
+
+    /// The turn has begun as soon as the waiting line appears, so the avatar opens that too.
+    #[test]
+    fn the_avatar_opens_the_waiting_line_too() {
+        let mut transcript = Transcript::default();
+        transcript.set_waiting(Some(Waiting {
+            phase: Phase::Waiting {
+                model: "llama3.2".to_owned(),
+            },
+            frame: 0,
+            elapsed_s: None,
+        }));
+        transcript.refresh(&[user("Raconte"), streaming("")], 60, 0);
+
+        let line = transcript
+            .line_texts()
+            .into_iter()
+            .find(|l| l.contains("réfléchit"))
+            .expect("the waiting line is there");
+        assert!(line.starts_with(&format!("{AVATAR} ")), "{line:?}");
+    }
+
+    /// Snapshots capture characters, never colour, so the avatar's tone needs its own test.
+    #[test]
+    fn the_avatar_is_drawn_in_the_accent_colour() {
+        let mut transcript = Transcript::default();
+        transcript.refresh(&[assistant("Bonjour.")], 60, 0);
+
+        let line = transcript
+            .visible(0, 10)
+            .into_iter()
+            .find(|l| {
+                l.spans
+                    .first()
+                    .is_some_and(|s| s.content.starts_with(AVATAR))
+            })
+            .expect("the marked line is there");
+        assert_eq!(
+            line.spans[0].style.fg,
+            Some(crate::theme::palette().accent),
+            "{:?}",
+            line.spans[0]
+        );
+    }
+
+    /// The gutter is exactly two columns wide. A glyph of *ambiguous* East Asian width renders
+    /// as one cell in some terminals and two in others, which would shunt every reply's text
+    /// out of alignment — and snapshots count characters, not cells, so they cannot see it.
+    /// This test is the guard on any future change of glyph.
+    #[test]
+    fn the_avatar_is_one_cell_wide() {
+        use unicode_width::UnicodeWidthStr;
+        assert_eq!(
+            AVATAR.width(),
+            1,
+            "{AVATAR:?} must occupy exactly one terminal cell"
+        );
     }
 }

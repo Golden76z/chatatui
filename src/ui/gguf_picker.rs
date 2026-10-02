@@ -5,12 +5,11 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::Style,
     text::{Line, Span},
-    widgets::{Block, BorderType, Clear, List, ListItem, ListState, Paragraph},
+    widgets::{Block, BorderType, List, ListItem, ListState, Paragraph},
 };
 
 use crate::{markdown::display_width, state::GgufPicker, tokens::format_bytes};
 
-const WIDTH: u16 = 68;
 const MAX_ROWS: u16 = 12;
 
 /// Draws the popup centred in `area`.
@@ -20,8 +19,8 @@ pub fn render(picker: &GgufPicker, frame: &mut Frame, area: Rect) {
         .unwrap_or(MAX_ROWS)
         .min(MAX_ROWS);
     // Borders + repository + filter + blank line + rows.
-    let popup = super::centered(area, WIDTH, rows + 5);
-    frame.render_widget(Clear, popup);
+    let popup = super::centered(area, super::popup_width(area), rows + 5);
+    super::clear_modal_rows(frame, area, popup);
 
     let palette = crate::theme::palette();
     let block = Block::bordered()

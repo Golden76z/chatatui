@@ -5,7 +5,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Clear, List, ListItem, ListState, Paragraph},
+    widgets::{Block, BorderType, List, ListItem, ListState, Paragraph},
 };
 
 use crate::{
@@ -14,7 +14,6 @@ use crate::{
     state::{ModelList, ModelPicker},
 };
 
-const WIDTH: u16 = 64;
 const MAX_ROWS: u16 = 14;
 
 /// Draws the popup centred in `area`.
@@ -30,8 +29,12 @@ pub fn render(app: &App, picker: &ModelPicker, frame: &mut Frame, area: Rect) {
     let error_rows = u16::try_from(errors.len()).unwrap_or(u16::MAX);
     let separator = u16::from(error_rows > 0);
     // Borders + filter line + blank line + rows (+ blank + errors).
-    let popup = super::centered(area, WIDTH, rows + 4 + separator + error_rows);
-    frame.render_widget(Clear, popup);
+    let popup = super::centered(
+        area,
+        super::popup_width(area),
+        rows + 4 + separator + error_rows,
+    );
+    super::clear_modal_rows(frame, area, popup);
 
     let block = Block::bordered()
         .border_type(BorderType::Rounded)

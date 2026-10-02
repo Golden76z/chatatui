@@ -10,7 +10,7 @@ use ratatui::{
     layout::Rect,
     style::Style,
     text::Line,
-    widgets::{Block, BorderType, Clear, Paragraph},
+    widgets::{Block, BorderType, Paragraph},
 };
 
 use crate::{app::App, state::Overlay};
@@ -121,7 +121,7 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
     };
     let total = popup.lines.len();
     let popup_area = rect(area, preferred_width(overlay), total);
-    frame.render_widget(Clear, popup_area);
+    super::clear_modal_rows(frame, area, popup_area);
 
     let visible = popup_area.height.saturating_sub(2);
     let max = u16::try_from(total)

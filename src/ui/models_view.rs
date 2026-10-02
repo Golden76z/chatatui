@@ -9,7 +9,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Clear, List, ListItem, ListState, Paragraph},
+    widgets::{Block, BorderType, List, ListItem, ListState, Paragraph},
 };
 
 use super::sidebar::{ago, truncate};
@@ -21,7 +21,6 @@ use crate::{
     tokens::{format_bytes, format_count},
 };
 
-const WIDTH: u16 = 76;
 const MAX_ROWS: u16 = 10;
 
 /// Draws the popup centred in `area`.
@@ -31,8 +30,8 @@ pub fn render(picker: &ModelsPicker, frame: &mut Frame, area: Rect) {
         .unwrap_or(MAX_ROWS)
         .min(MAX_ROWS);
     // Borders + filter + blank line + rows + blank line + detail + caveat.
-    let popup = super::centered(area, WIDTH, rows + 7);
-    frame.render_widget(Clear, popup);
+    let popup = super::centered(area, super::popup_width(area), rows + 7);
+    super::clear_modal_rows(frame, area, popup);
 
     let palette = crate::theme::palette();
     let block = Block::bordered()

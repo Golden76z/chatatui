@@ -80,10 +80,17 @@ token).
 ### Interface
 
 Who speaks is read from position, not from a label: the question is indented and dimmed,
-the reply sits at the left margin. The roles that position cannot tell apart — `système`,
-`résumé de la conversation`, `fichier joint`, `outil` — keep a small dim label above their
-body. Rhythm replaces frames: one blank line after every message, one more before a
-question, so a turn is separated from the next by two and its own halves by one.
+the reply sits at the left margin. The one mark that remains is the assistant's `✳`, which
+opens a turn — not a message, so a reply resumed after a tool round is not marked twice. It
+costs nothing: it sits in the two columns the reply's own margin already reserves. The roles
+that position cannot tell apart — `système`, `résumé de la conversation`, `fichier joint`,
+`outil` — keep a small dim label above their body. Rhythm replaces frames: one blank line
+after every message, one more before a question, so a turn is separated from the next by two
+and its own halves by one.
+
+Modals take a share of the terminal rather than a fixed width, bounded so they stay readable
+on a narrow screen and do not sprawl on a wide one, and they blank the full rows they cover
+so the conversation does not show through beside their frame.
 
 Inside a reply, headings carry a heavier weight and a rule the width of their own text,
 lists a middle dot `·`, quotes a bar `│`. A code block is simply indented by four columns,

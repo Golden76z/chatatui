@@ -74,6 +74,34 @@ pub fn render(app: &App, frame: &mut Frame) {
     }
 }
 
+/// How wide a modal should be: a share of the terminal, bounded.
+///
+/// This replaces the per-view constants, which had drifted to four unrelated values — 64, 68, 70
+/// and 76 — for no reason a reader could recover. A modal now grows with the terminal instead of
+/// looking cramped on a wide screen, and the floor keeps it readable on a narrow one.
+fn popup_width(area: Rect) -> u16 {
+    (area.width * 3 / 5).clamp(64, 100).min(area.width)
+}
+
+/// Blanks the full width of every row a modal covers, then the modal is drawn into `popup`.
+///
+/// `Clear` on the modal's own rect leaves the columns beside it painted, so the conversation
+/// showed through next to the frame — its rules, and now the assistant's avatar, which read as a
+/// glitch rather than as depth. Inline affordances (the slash suggestions) deliberately do not
+/// use this: they are anchored hints, not modals, and blanking their rows would erase more of the
+/// conversation than they cover.
+fn clear_modal_rows(frame: &mut Frame, area: Rect, popup: Rect) {
+    frame.render_widget(
+        ratatui::widgets::Clear,
+        Rect {
+            x: area.x,
+            y: popup.y,
+            width: area.width,
+            height: popup.height,
+        },
+    );
+}
+
 /// A `width` × `height` rectangle centred in `area` (clamped to it), for popups.
 fn centered(area: Rect, width: u16, height: u16) -> Rect {
     let [row] = Layout::vertical([Constraint::Length(height.min(area.height))])
@@ -894,5 +922,31 @@ mod tests {
             });
         }
         insta::assert_snapshot!(draw(&mut app, 70, 12).backend());
+    }
+
+    /// A modal takes a share of the terminal rather than a fixed width, so it does not look
+    /// cramped on a wide screen — but the share is bounded at both ends: a floor so it stays
+    /// readable, a ceiling so a very wide terminal does not produce an unreadably long line,
+    /// and never wider than the terminal itself.
+    #[test]
+    fn a_modal_takes_a_bounded_share_of_the_terminal() {
+        let row = |width| Rect::new(0, 0, width, 24);
+
+        assert_eq!(
+            popup_width(row(200)),
+            100,
+            "ceiling on a very wide terminal"
+        );
+        assert_eq!(
+            popup_width(row(160)),
+            96,
+            "three fifths in the middle range"
+        );
+        assert_eq!(popup_width(row(100)), 64, "floor rather than a cramped 60");
+        assert_eq!(
+            popup_width(row(50)),
+            50,
+            "never wider than the terminal, so the floor cannot overflow it"
+        );
     }
 }

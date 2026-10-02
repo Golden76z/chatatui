@@ -3758,7 +3758,7 @@ mod tests {
             .iter()
             .map(|l| l.to_string())
             .collect();
-        assert!(visible.contains(&"  Bonjour▍".to_owned()));
+        assert!(visible.contains(&"✳ Bonjour▍".to_owned()));
     }
 
     #[test]

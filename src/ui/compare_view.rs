@@ -5,7 +5,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Clear, Paragraph},
+    widgets::{Block, BorderType, Paragraph},
 };
 
 use crate::{
@@ -106,7 +106,7 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect) {
     };
     let palette = crate::theme::palette();
     let popup = popup_area(area);
-    frame.render_widget(Clear, popup);
+    super::clear_modal_rows(frame, area, popup);
     let generating = app.is_generating();
     let hint = if generating {
         " génération… · ↑↓ défiler · Échap fermer "

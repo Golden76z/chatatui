@@ -5,12 +5,11 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Clear, List, ListItem, ListState, Paragraph},
+    widgets::{Block, BorderType, List, ListItem, ListState, Paragraph},
 };
 
 use crate::{app::App, markdown::display_width, state::Palette};
 
-const WIDTH: u16 = 70;
 const MAX_ROWS: u16 = 12;
 
 /// Draws the palette centred in `area`.
@@ -19,8 +18,8 @@ pub fn render(app: &App, palette: &Palette, frame: &mut Frame, area: Rect) {
     let rows = u16::try_from(visible.len().max(1))
         .unwrap_or(MAX_ROWS)
         .min(MAX_ROWS);
-    let popup = super::centered(area, WIDTH, rows + 4);
-    frame.render_widget(Clear, popup);
+    let popup = super::centered(area, super::popup_width(area), rows + 4);
+    super::clear_modal_rows(frame, area, popup);
 
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
