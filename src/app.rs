@@ -3162,7 +3162,18 @@ impl App {
             }
             LlmEvent::Error(error) => {
                 self.wait = None;
-                self.status = Status::Error(error.clone());
+                // The failed message carries the sentence, in the error colour, exactly where
+                // the reply would have appeared. Repeating it in the status bar costs the hint
+                // row — the hints get whatever width the label leaves them, and an explanatory
+                // sentence leaves none. `restore_queued` below still speaks when the user's
+                // text went back to the input box, because that is about the input box and has
+                // nowhere else to be said.
+                self.status = Status::Ready;
+                // And the view has to be looking at it. Starting a turn already jumps to the
+                // bottom; a turn that breaks deserves the same, or a user who scrolled away
+                // mid-generation sees the bar return to `● Prêt` and nothing else — exactly
+                // what a successful reply looks like.
+                self.scroll.to_bottom();
                 self.restore_queued(&error);
                 self.finish_generation(MessageStatus::Failed(error))
                     .into_iter()
@@ -3638,15 +3649,36 @@ mod tests {
         assert!(app.update(Action::Cancel).is_empty());
     }
 
+    /// The conversation is now the only place a failure is said, so the view has to be
+    /// looking at it. A user who scrolled up during the generation would otherwise see the
+    /// status bar return to `● Prêt` and nothing else — indistinguishable from success. The
+    /// turn starting already calls `to_bottom`; the turn breaking deserves the same.
     #[test]
-    fn error_marks_message_failed_and_sets_status() {
+    fn a_failed_turn_brings_the_view_back_to_it() {
         let mut app = app();
         let job = send(&mut app, "?");
-        let error = "Ollama injoignable sur http://localhost:11434/v1".to_owned();
+        app.update(Action::ScrollUp(3));
+        assert!(!app.scroll.is_following(), "the user scrolled away");
+
+        llm(&mut app, job.request_id, LlmEvent::Error("panne".into()));
+
+        assert!(app.scroll.is_following());
+    }
+
+    /// A failed turn belongs to the conversation, not to the status bar. The failed message
+    /// already carries the sentence in the error colour, exactly where the reply would have
+    /// appeared — and echoing it below costs the whole hint row, since the status bar gives
+    /// the hints whatever width the label leaves them. J33 moved the waiting line out of the
+    /// status bar for this same reason: the conversation says what happened to the conversation.
+    #[test]
+    fn a_failed_turn_speaks_in_the_conversation_not_in_the_status_bar() {
+        let mut app = app();
+        let job = send(&mut app, "?");
+        let error = "quantization « IQ1_S » non prise en charge par le moteur local".to_owned();
         llm(&mut app, job.request_id, LlmEvent::Error(error.clone()));
 
-        assert_eq!(last(&app).status, MessageStatus::Failed(error.clone()));
-        assert_eq!(app.status, Status::Error(error));
+        assert_eq!(last(&app).status, MessageStatus::Failed(error));
+        assert_eq!(app.status, Status::Ready);
         assert!(!app.is_generating());
     }
 

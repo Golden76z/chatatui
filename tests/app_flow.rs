@@ -410,7 +410,9 @@ async fn unreachable_server_is_shown_as_an_error() {
     h.run_until_idle().await;
 
     let message = "Ollama injoignable sur http://localhost:11434/v1".to_owned();
-    assert_eq!(h.app.status, Status::Error(message.clone()));
+    // The failure is told in the conversation, where the reply would have been — not in the
+    // status bar, which keeps its hints.
+    assert_eq!(h.app.status, Status::Ready);
     assert_eq!(h.last_reply(), ("", &MessageStatus::Failed(message)));
 
     // The app keeps working: the next message starts a new generation.
@@ -617,10 +619,18 @@ async fn missing_key_is_explained_in_the_picker_and_on_send() {
     h.dispatch(Action::Submit);
     h.send("Allô ?");
     h.run_until_idle().await;
+    // Sending anyway must still say why, and it says it in the conversation: the turn is
+    // marked failed and carries the sentence the picker showed.
     assert_eq!(
-        h.app.status,
-        Status::Error("Claude : clé API absente (définissez la variable ANTHROPIC_API_KEY)".into())
+        h.last_reply(),
+        (
+            "",
+            &MessageStatus::Failed(
+                "Claude : clé API absente (définissez la variable ANTHROPIC_API_KEY)".to_owned()
+            )
+        )
     );
+    assert_eq!(h.app.status, Status::Ready);
 }
 
 #[tokio::test]
