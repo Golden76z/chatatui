@@ -283,6 +283,17 @@ impl LocalClient {
     }
 }
 
+/// Whether candle refuses this quantization outright.
+///
+/// candle 0.11's `GgmlDType` holds `F32`, `F16`, `BF16`, the legacy `Q4_0`…`Q8_1` and the
+/// K-quants `Q2_K`…`Q8_K` — and no i-quant whatsoever. Every i-quant name begins with `IQ` and
+/// no supported one does, so the prefix is the whole test. Asking the header costs nothing and
+/// happens before the file is opened, which is what lets the refusal name the quantization
+/// instead of surfacing candle's `unknown dtype for tensor 16`.
+fn is_i_quant(quantization: &str) -> bool {
+    quantization.starts_with("IQ")
+}
+
 #[async_trait::async_trait]
 impl super::LlmClient for LocalClient {
     async fn chat_stream(&self, request: ChatRequest) -> Result<TokenStream, LlmError> {
@@ -292,6 +303,14 @@ impl super::LlmClient for LocalClient {
         let architecture = metadata
             .architecture
             .ok_or_else(|| LlmError::Local("le fichier ne nomme pas son architecture".into()))?;
+        if let Some(quantization) = metadata.quantization.as_deref()
+            && is_i_quant(quantization)
+        {
+            return Err(LlmError::Local(format!(
+                "quantization « {quantization} » non prise en charge par le moteur local : \
+                 il faut un K-quant, par exemple Q4_K_M"
+            )));
+        }
         let prompt = crate::models::template::render(&architecture, &request.messages)
             .map_err(|e| LlmError::Local(e.to_string()))?;
 
@@ -1069,6 +1088,20 @@ mod tests {
         bytes
     }
 
+    /// The same header plus `general.file_type`, the key that names the quantization.
+    fn gguf_header_quantized(architecture: &str, file_type: u32) -> Vec<u8> {
+        let mut bytes = gguf_header(architecture);
+        // Correct the key count the single-pair header declared, then append the second pair.
+        bytes[16..24].copy_from_slice(&2u64.to_le_bytes());
+        let key = b"general.file_type";
+        bytes.extend_from_slice(&(key.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(key);
+        // Value type 4 is a uint32, as the GGUF specification numbers them.
+        bytes.extend_from_slice(&4u32.to_le_bytes());
+        bytes.extend_from_slice(&file_type.to_le_bytes());
+        bytes
+    }
+
     /// A vocabulary of the 256 byte-level characters and nothing else, so every text encodes
     /// and every multi-byte character necessarily straddles several tokens — which is what a
     /// real vocabulary does too for any character it does not hold merged.
@@ -1185,5 +1218,37 @@ mod tests {
             chat_template: None,
         };
         crate::models::tokenizer::build(&data).expect("a byte-level tokenizer")
+    }
+
+    /// candle implements no i-quant at all, so an `IQ*` file dies inside its tensor-info table
+    /// with `unknown dtype for tensor 16` — an English sentence naming an internal index, which
+    /// tells the user neither what is wrong nor what to do. The header already says `IQ1_S`
+    /// before candle opens anything, so the refusal happens here, in French, naming both the
+    /// quantization the file carries and one that would work.
+    #[tokio::test]
+    async fn a_quantization_the_engine_cannot_read_is_refused_by_name() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let folder = dir.path().join("unsloth").join("Qwen3-4B-GGUF");
+        std::fs::create_dir_all(&folder).expect("creates the folders");
+        // 24 is `IQ1_S`, the value the user's own Qwen3-4B file carries.
+        std::fs::write(folder.join("q.gguf"), gguf_header_quantized("qwen3", 24))
+            .expect("writes the file");
+
+        let outcome = LocalClient::new(dir.path())
+            .chat_stream(ChatRequest {
+                model: "unsloth/Qwen3-4B-GGUF/q.gguf".to_owned(),
+                messages: Vec::new(),
+                tools: Vec::new(),
+            })
+            .await;
+        let Err(error) = outcome else {
+            panic!("candle cannot read an i-quant");
+        };
+
+        assert_eq!(
+            error.to_string(),
+            "quantization « IQ1_S » non prise en charge par le moteur local : \
+             il faut un K-quant, par exemple Q4_K_M"
+        );
     }
 }

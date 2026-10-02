@@ -149,6 +149,20 @@ fn file_type_name(value: u64) -> Option<&'static str> {
         16 => "Q5_K_S",
         17 => "Q5_K_M",
         18 => "Q6_K",
+        // 19 through 31 are the i-quants, except 21, which llama.cpp slotted a K-quant into.
+        19 => "IQ2_XXS",
+        20 => "IQ2_XS",
+        21 => "Q2_K_S",
+        22 => "IQ3_XS",
+        23 => "IQ3_XXS",
+        24 => "IQ1_S",
+        25 => "IQ4_NL",
+        26 => "IQ3_S",
+        27 => "IQ3_M",
+        28 => "IQ2_S",
+        29 => "IQ2_M",
+        30 => "IQ4_XS",
+        31 => "IQ1_M",
         32 => "BF16",
         _ => return None,
     })
@@ -169,6 +183,16 @@ fn ggml_type_name(value: u32) -> Option<&'static str> {
         12 => "Q4_K",
         13 => "Q5_K",
         14 => "Q6_K",
+        // The i-quants, whose tensor-type numbering is its own and not the `file_type` one.
+        16 => "IQ2_XXS",
+        17 => "IQ2_XS",
+        18 => "IQ3_XXS",
+        19 => "IQ1_S",
+        20 => "IQ4_NL",
+        21 => "IQ3_S",
+        22 => "IQ2_S",
+        23 => "IQ4_XS",
+        29 => "IQ1_M",
         30 => "BF16",
         _ => return None,
     })
@@ -559,5 +583,45 @@ mod tests {
 
         // The F32 norm does not outvote the quantized weights.
         assert_eq!(meta.quantization.as_deref(), Some("Q6_K"));
+    }
+
+    /// `general.file_type` 24 is `IQ1_S`. The i-quants occupy 19 through 31 in llama.cpp's
+    /// `llama_ftype`, a range this table used to skip entirely — so an i-quant file came back
+    /// with no quantization at all, and neither `/models` nor the local engine could name what
+    /// they were looking at. Verified against a real file: `Qwen3-4B-UD-IQ1_S.gguf` carries 24.
+    #[test]
+    fn an_i_quant_names_itself_rather_than_coming_back_blank() {
+        let bytes = gguf(
+            3,
+            &[
+                ("general.architecture", 8, string("qwen3")),
+                ("general.file_type", 4, u32_value(24)),
+            ],
+            &[],
+        );
+
+        let meta = parse(&mut Cursor::new(bytes)).expect("parses");
+
+        assert_eq!(meta.quantization.as_deref(), Some("IQ1_S"));
+    }
+
+    /// The fallback table has its own numbering: `IQ1_S` is 19 as a tensor type and 24 as a
+    /// `general.file_type`. A file that omits `file_type` — some conversion tools do — is named
+    /// from its dominant tensor type, so that table needs the i-quants as much as the other one.
+    #[test]
+    fn an_i_quant_is_named_from_its_tensors_when_the_file_type_is_missing() {
+        let bytes = gguf(
+            3,
+            &[("general.architecture", 8, string("qwen3"))],
+            &[
+                ("blk.0.attn_norm.weight", vec![2560], 0),
+                ("blk.0.attn_q.weight", vec![2560, 2560], 19),
+                ("blk.0.attn_k.weight", vec![2560, 2560], 19),
+            ],
+        );
+
+        let meta = parse(&mut Cursor::new(bytes)).expect("parses");
+
+        assert_eq!(meta.quantization.as_deref(), Some("IQ1_S"));
     }
 }
