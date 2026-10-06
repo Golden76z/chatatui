@@ -19,14 +19,22 @@ jobs:
     strategy:
       matrix:
         include:
+          # x86_64 is built for the v3 microarchitecture level (AVX2, FMA, BMI). candle's
+          # quantized kernels are selected with `#[cfg(target_feature = "avx2")]`, and the
+          # default x86-64 target stops at SSE2, so without this the local engine falls back
+          # to scalar code: measured at 0.13 token/s against 3.36 on the same machine and
+          # model. The floor is Intel Haswell (2013) and AMD Excavator (2015). The aarch64
+          # targets need nothing: NEON is in their baseline.
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+            rustflags: -C target-cpu=x86-64-v3
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
           - os: macos-latest
             target: aarch64-apple-darwin
           - os: windows-latest
             target: x86_64-pc-windows-msvc
+            rustflags: -C target-cpu=x86-64-v3
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -34,6 +42,8 @@ jobs:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release --locked --target ${{ matrix.target }}
+        env:
+          RUSTFLAGS: ${{ matrix.rustflags }}
       - name: Package
         if: runner.os != 'Windows'
         run: |

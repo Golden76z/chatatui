@@ -175,6 +175,16 @@ pub trait LlmClient: Send + Sync {
     async fn context_window(&self, _model: &str) -> Option<u64> {
         None
     }
+
+    /// What this client is doing while [`chat_stream`](LlmClient::chat_stream) is awaited.
+    ///
+    /// Shown on the waiting line, so it has to be true: a network client is opening a
+    /// connection, an in-process engine is loading weights. `stream_task` cannot tell them
+    /// apart, and announcing "connexion…" for an engine whose whole point is that there is no
+    /// server sends the user looking for a daemon that is not involved.
+    fn preparing(&self) -> Phase {
+        Phase::Connecting
+    }
 }
 
 /// Backend failures. The `Display` output is shown as-is in the UI.
@@ -305,12 +315,18 @@ pub fn build_clients(
 ///
 /// The reply is a sequence of waits — connecting, retrieving documents, waiting on the
 /// model, running a tool — and until the first token none of them is visible on screen.
-/// `stream_task` reports each one around the `await` it already performs, so neither the
-/// `LlmClient` nor the `ContextProvider` trait has to change.
+/// `stream_task` reports each one around the `await` it already performs. Which phase covers
+/// the first await is the client's to say — see [`LlmClient::preparing`] — because only the
+/// client knows whether it is opening a connection or reading a file.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Phase {
     /// The job has started; nothing has been asked of anyone yet.
     Connecting,
+    /// An in-process engine is reading its weights off the disk.
+    ///
+    /// The counterpart of [`Connecting`](Phase::Connecting) for a backend that has no server:
+    /// the seconds before the first token are spent loading gigabytes, not opening a socket.
+    Loading,
     /// Retrieval is running over `collections` collections (0 when none is selected).
     Retrieving { collections: usize },
     /// The request is out and the model has not answered yet.

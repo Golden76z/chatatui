@@ -54,6 +54,12 @@ insta = "1.48.0"
 tempfile = "3"
 
 # Read the optimization guideline for more details: https://ratatui.rs/recipes/apps/release-your-app/#optimizations
+#
+# `opt-level = "s"` looks wrong next to an inference engine, and raising it is not the lever.
+# candle picks its quantized kernels with `#[cfg(target_feature = "avx2")]`, so what decides
+# the engine's speed on x86_64 is the target CPU, not the optimisation level — see the
+# `target-cpu=x86-64-v3` flags in `.github/workflows/release.yml` and the build note in the
+# README. Measured difference on one machine: 0.13 token/s against several.
 [profile.release]
 codegen-units = 1
 lto = true

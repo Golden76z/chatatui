@@ -183,11 +183,13 @@ async fn generate(
         // them once before the loop left every round but the first with no phase at all,
         // which is the frozen screen this milestone exists to remove.
         //
-        // `Connecting` sits here rather than at the top of the job because this await is
-        // the connection: it is the first one that actually yields, so this is the first
-        // place the phase can be seen at all (nothing else awaits between the job starting
-        // and the request going out). A phase the user cannot observe is not a phase.
-        send(LlmEvent::Phase(Phase::Connecting));
+        // The phase sits here rather than at the top of the job because this await is the
+        // preparation: it is the first one that actually yields, so this is the first place
+        // the phase can be seen at all (nothing else awaits between the job starting and the
+        // request going out). A phase the user cannot observe is not a phase. Which phase it
+        // is belongs to the client — opening a connection and reading weights off a disk are
+        // not the same wait, and only the client knows which one this is.
+        send(LlmEvent::Phase(llm.preparing()));
         let mut stream = match llm.chat_stream(request).await {
             Ok(stream) => stream,
             Err(error) => return send(LlmEvent::Error(error.to_string())),
@@ -346,6 +348,26 @@ mod tests {
 
     fn token(text: &str) -> LlmEvent {
         LlmEvent::Token(text.to_owned())
+    }
+
+    /// Which phase covers the first await is the client's to say, not this task's. Hard-coding
+    /// `Connecting` announced a connection to every user of an engine that opens no socket.
+    #[tokio::test]
+    async fn the_first_phase_is_the_one_the_client_declares() {
+        let llm = Arc::new(
+            MockLlmClient::new([MockReply::tokens(&["Bon"])]).preparing_as(Phase::Loading),
+        );
+
+        let events = run_to_end(backends(llm)).await;
+
+        assert!(
+            events.contains(&LlmEvent::Phase(Phase::Loading)),
+            "the client's own phase is sent: {events:?}"
+        );
+        assert!(
+            !events.contains(&LlmEvent::Phase(Phase::Connecting)),
+            "and not the default it did not ask for: {events:?}"
+        );
     }
 
     #[tokio::test]

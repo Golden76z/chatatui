@@ -296,6 +296,10 @@ fn is_i_quant(quantization: &str) -> bool {
 
 #[async_trait::async_trait]
 impl super::LlmClient for LocalClient {
+    fn preparing(&self) -> super::Phase {
+        super::Phase::Loading
+    }
+
     async fn chat_stream(&self, request: ChatRequest) -> Result<TokenStream, LlmError> {
         let path = self.path_of(&request.model)?;
         let metadata =
@@ -715,6 +719,17 @@ mod tests {
             },
             sent,
         )
+    }
+
+    /// The waiting line shows whatever this returns while the weights are read. For an engine
+    /// with no server, the inherited `Connecting` was simply false.
+    #[test]
+    fn the_local_engine_prepares_by_loading_not_connecting() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+
+        let phase = LocalClient::new(dir.path()).preparing();
+
+        assert_eq!(phase, crate::llm::Phase::Loading);
     }
 
     #[tokio::test]

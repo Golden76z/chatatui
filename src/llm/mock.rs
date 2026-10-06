@@ -11,7 +11,7 @@ use std::{
 use async_trait::async_trait;
 use futures::{StreamExt, stream};
 
-use super::{ChatRequest, LlmClient, LlmError, ModelInfo, StreamItem, TokenStream, Usage};
+use super::{ChatRequest, LlmClient, LlmError, ModelInfo, Phase, StreamItem, TokenStream, Usage};
 
 /// What the mock answers to the next `chat_stream` call.
 #[derive(Clone, Debug)]
@@ -45,6 +45,8 @@ pub struct MockLlmClient {
     models: Vec<ModelInfo>,
     context_window: Option<u64>,
     dropped_streams: Arc<AtomicUsize>,
+    /// `None` leaves the trait's own default in place.
+    preparing: Option<Phase>,
 }
 
 impl MockLlmClient {
@@ -59,6 +61,12 @@ impl MockLlmClient {
     /// Sets the models returned by `list_models`.
     pub fn with_models(mut self, models: &[&str]) -> Self {
         self.models = models.iter().map(|m| ModelInfo::named(*m)).collect();
+        self
+    }
+
+    /// Sets the phase this client declares while `chat_stream` is awaited.
+    pub fn preparing_as(mut self, phase: Phase) -> Self {
+        self.preparing = Some(phase);
         self
     }
 
@@ -93,6 +101,10 @@ impl Drop for DropGuard {
 
 #[async_trait]
 impl LlmClient for MockLlmClient {
+    fn preparing(&self) -> Phase {
+        self.preparing.clone().unwrap_or(Phase::Connecting)
+    }
+
     async fn chat_stream(&self, request: ChatRequest) -> Result<TokenStream, LlmError> {
         self.requests
             .lock()

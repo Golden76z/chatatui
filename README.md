@@ -360,6 +360,23 @@ This first engine is narrow on purpose:
   the quantization to download for a first try.**
 - **CPU only, no tools.** No GPU acceleration yet, and the local provider offers no tool
   specifications — `/tools on` with a local model just means the model has none.
+- **Speed depends entirely on how the binary was built.** candle selects its quantized
+  kernels with `#[cfg(target_feature = "avx2")]` on x86_64 and `neon` on aarch64. NEON is in
+  every aarch64 baseline, so Apple Silicon and ARM Linux are fast out of the box; the default
+  x86-64 target stops at SSE2, and without AVX2 the engine falls back to scalar code. On one
+  machine, same model, Qwen3-4B `Q4_K_M`: **0.13 token/s scalar against 3.36 with AVX2**, and
+  the first token after 57 seconds instead of 6. The published x86_64 binaries are therefore
+  built for `x86-64-v3` — **Intel Haswell (2013) and AMD Excavator (2015) or newer.** On an
+  older CPU, use the aarch64 build or compile from source without that flag.
+
+**Building from source for local inference.** A `cargo build --release` uses the default
+x86-64 target and will feel hung. Build with your own CPU's instructions:
+
+```sh
+RUSTFLAGS="-C target-cpu=native" cargo build --release
+```
+
+A debug build is slower again by about an order of magnitude; do not judge the engine by one.
 
 To talk to another architecture, or to use GPU acceleration, serve it with Ollama or
 llama.cpp and point a provider at it instead.

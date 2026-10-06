@@ -58,6 +58,7 @@ impl Waiting {
         let dim = Style::default().fg(crate::theme::palette().dim);
         let what = match &self.phase {
             Phase::Connecting => "connexion…".to_owned(),
+            Phase::Loading => "chargement du modèle…".to_owned(),
             Phase::Retrieving { collections: 0 } => "recherche dans les documents…".to_owned(),
             Phase::Retrieving { collections: 1 } => "recherche dans 1 collection…".to_owned(),
             Phase::Retrieving { collections } => {
@@ -1030,6 +1031,32 @@ mod tests {
 
     /// Review Focus 5: the braille glyph carries no information the text does not. A
     /// terminal that cannot draw it must still show a readable line.
+    /// The local engine has no server to connect to, and the seconds it spends before the
+    /// first token are spent reading gigabytes off the disk. Calling that "connexion…" sends
+    /// the reader looking for a daemon that is not involved — the same lie `erreur du
+    /// serveur :` told, in the other half of the screen.
+    #[test]
+    fn the_local_engine_says_it_is_loading_not_connecting() {
+        let waiting = Waiting {
+            phase: Phase::Loading,
+            frame: 0,
+            elapsed_s: Some(4),
+        };
+
+        let text: String = waiting
+            .line()
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+
+        assert!(
+            text.contains("chargement du modèle…"),
+            "the waiting line reads: {text}"
+        );
+        assert!(!text.contains("connexion"), "no connection is involved");
+    }
+
     #[test]
     fn the_waiting_line_reads_without_its_glyph() {
         let mut transcript = Transcript::default();
