@@ -176,8 +176,8 @@ async fn openai_http_error_carries_the_server_message() {
     };
     assert_eq!(
         error,
-        LlmError::Http {
-            status: 404,
+        LlmError::NotFound {
+            server: "Test".into(),
             message: "model \"nope\" not found, try pulling it first".into()
         }
     );
@@ -399,6 +399,33 @@ async fn local_rerank_server_in_cohere_format() {
     assert!(body.get("model").is_none(), "no model: the server's own");
 }
 
+/// A 404 is the plainest "wrong route" there is, and the first reason `wrong_format` lists.
+/// Pinned because it was broken once without a single test noticing: classifying 404 into its
+/// own `LlmError` variant took it out of the `Http` arm that drove this fallback, and a
+/// reranker behind a server with no Cohere route silently stopped working.
+#[tokio::test]
+async fn an_unknown_route_makes_the_reranker_try_the_other_format() {
+    use chatatui::rag::rerank::{Format, HttpReranker, Reranker};
+    let (base_url, _received) = serve_responses(vec![
+        ("404 Not Found", r#"{"error":"Not Found"}"#),
+        (
+            "200 OK",
+            r#"[{"index":2,"score":0.7},{"index":0,"score":0.2},{"index":1,"score":0.01}]"#,
+        ),
+    ])
+    .await;
+    let reranker =
+        HttpReranker::at_url(&base_url, "bge-reranker-base", Duration::from_secs(2)).expect("url");
+
+    let scores = reranker
+        .rerank("cargo", &documents())
+        .await
+        .expect("scores");
+
+    assert_eq!(scores, vec![0.2, 0.01, 0.7]);
+    assert_eq!(reranker.format(), Format::Tei);
+}
+
 #[tokio::test]
 async fn text_embeddings_inference_format_is_detected_and_remembered() {
     use chatatui::rag::rerank::{Format, HttpReranker, Reranker};
@@ -454,6 +481,7 @@ async fn rerank_server_errors_are_not_mistaken_for_another_format() {
     assert_eq!(
         error,
         LlmError::Http {
+            server: "serveur de re-classement".into(),
             status: 500,
             message: "model is not a reranker".into()
         }

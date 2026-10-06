@@ -195,9 +195,23 @@ pub enum LlmError {
     /// Rate limit or quota reached (HTTP 429).
     #[error("{server} : limite atteinte ({message})")]
     RateLimited { server: String, message: String },
+    /// The server has no such model, or nothing at the address it was given (HTTP 404).
+    ///
+    /// Both causes are named because nothing here can tell them apart: a completion endpoint
+    /// answers 404 for a model it has not installed and for a `base_url` that points elsewhere.
+    /// The server's own words follow, and usually settle it.
+    #[error("{server} : modèle ou adresse introuvable ({message})")]
+    NotFound { server: String, message: String },
     /// The server answered with another HTTP error status.
-    #[error("erreur HTTP {status} : {message}")]
-    Http { status: u16, message: String },
+    ///
+    /// The server is named: several providers can be configured at once, and a bare status
+    /// does not say which of them answered.
+    #[error("{server} : erreur HTTP {status} ({message})")]
+    Http {
+        server: String,
+        status: u16,
+        message: String,
+    },
     /// The server reported an error inside the stream.
     #[error("erreur du serveur : {0}")]
     Server(String),
@@ -219,8 +233,13 @@ impl LlmError {
         let server = server.to_owned();
         match status {
             401 | 403 => Self::Auth { server, message },
+            404 => Self::NotFound { server, message },
             429 => Self::RateLimited { server, message },
-            _ => Self::Http { status, message },
+            _ => Self::Http {
+                server,
+                status,
+                message,
+            },
         }
     }
 }
@@ -392,6 +411,20 @@ mod tests {
             LlmError::from_status("OpenAI", 500, "oops".into()),
             LlmError::Http { status: 500, .. }
         ));
+
+        // A 404 on a completion endpoint has two causes and nothing here can tell them apart:
+        // the model is not installed, or `base_url` points somewhere else. Both are named, and
+        // the server's own words follow — they usually settle it.
+        assert_eq!(
+            LlmError::from_status("Ollama", 404, "model 'llama3.2' not found".into()).to_string(),
+            "Ollama : modèle ou adresse introuvable (model 'llama3.2' not found)"
+        );
+        // Whatever the status, say which provider answered. Four can be configured at once, and
+        // `erreur HTTP 502` on its own does not tell the user which of them broke.
+        assert_eq!(
+            LlmError::from_status("Ollama", 502, "upstream".into()).to_string(),
+            "Ollama : erreur HTTP 502 (upstream)"
+        );
     }
 
     #[tokio::test]

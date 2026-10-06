@@ -87,8 +87,8 @@ auto_compact = false
 # Variable d'environnement contenant un jeton HuggingFace, pour les dépôts restreints.
 # token_env = "HF_TOKEN"
 
-# Providers. "ollama", "openai" (ChatGPT) and "claude" are predefined: the sections below
-# only override their settings. Add your own OpenAI-compatible server the same way, e.g.
+# Providers. "ollama", "openai" (ChatGPT), "claude" and "local" are predefined: the sections
+# below only override their settings. Add your own OpenAI-compatible server the same way, e.g.
 #   [providers.lmstudio]
 #   label = "LM Studio"
 #   base_url = "http://localhost:1234/v1"
@@ -106,6 +106,11 @@ model = "llama3.2"
 # [providers.claude]          # key from $ANTHROPIC_API_KEY
 # model = "..."
 # max_output_tokens = 8192
+
+# [providers.local]           # no server and no API key
+# Runs a GGUF from the models folder above in this process, on the CPU. Choose one with
+# /model, download one with /pull. It needs a qwen3 GGUF in a K-quant (Q4_K_M and the
+# like): i-quants (IQ1_S, IQ4_XS, …) cannot be read.
 #
 # Any provider: `context_window = 32768` sets the context size shown by the gauge, when
 # the server cannot report it (OpenAI) or reports it wrongly. `price_input = 3.0` and
@@ -585,6 +590,21 @@ mod tests {
     fn default_file_matches_default_struct() {
         let parsed = Config::from_toml(DEFAULT_CONFIG_TOML).expect("default config parses");
         assert_eq!(parsed, Config::default());
+    }
+
+    /// The configuration the application writes is the only documentation most people ever
+    /// read. A preset the app offers but the template never names is a provider nobody finds:
+    /// `local` shipped that way in J34 — in the README, the PLAN and the roadmap, and absent
+    /// from the one file the user opens. The section name is what is checked, because a bare
+    /// `"local"` would match `localhost` in a base URL and pass for free.
+    #[test]
+    fn the_shipped_configuration_names_every_preset() {
+        for (id, _) in presets() {
+            assert!(
+                DEFAULT_CONFIG_TOML.contains(&format!("providers.{id}")),
+                "the configuration template never mentions the « {id} » provider"
+            );
+        }
     }
 
     #[test]

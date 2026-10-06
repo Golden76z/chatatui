@@ -736,8 +736,8 @@ mod tests {
                 "broken"
             }
             async fn embed(&self, _: &[String]) -> Result<Vec<Vec<f32>>, crate::llm::LlmError> {
-                Err(crate::llm::LlmError::Http {
-                    status: 404,
+                Err(crate::llm::LlmError::NotFound {
+                    server: "Ollama".into(),
                     message: "model \"bge-m3\" not found, try pulling it first".into(),
                 })
             }

@@ -194,7 +194,10 @@ struct Item {
 /// Whether an error to a Cohere-format request suggests the server wants another format
 /// (unknown route, or a body it cannot read).
 fn wrong_format(error: &LlmError) -> bool {
-    matches!(error, LlmError::Http { status, .. } if matches!(status, 400 | 404 | 405 | 415 | 422))
+    // A 404 carries its own variant, so it is matched on its own: it is the plainest form of
+    // "no such route" and the reason this function exists.
+    matches!(error, LlmError::NotFound { .. })
+        || matches!(error, LlmError::Http { status, .. } if matches!(status, 400 | 405 | 415 | 422))
         || matches!(error, LlmError::Protocol(m) if m.starts_with("re-classement"))
 }
 
