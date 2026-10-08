@@ -389,7 +389,6 @@ impl Runtime {
 
     /// Updates the app and runs the resulting effects.
     fn dispatch(&mut self, action: Action) {
-        let had_overlay = self.app.overlay.is_some();
         let resized = matches!(action, Action::Resize { .. });
         for effect in self.app.update(action) {
             self.execute(effect);
@@ -398,11 +397,6 @@ impl Runtime {
             // Every running effect holds the `Rect` it was started on, and that rect means
             // nothing once the terminal changed size.
             self.effects.cancel_all();
-        } else if !had_overlay && self.app.overlay.is_some() {
-            // Eleven sites assign `self.overlay = Some(…)` and none of them would remember a
-            // trigger, so the opening is observed here rather than declared there.
-            let animation = crate::ui::effects::Animation::PopupOpened;
-            self.effects.start(animation, animation.area(&self.app));
         }
     }
 
@@ -801,7 +795,7 @@ mod tests {
         assert!(!effects.in_flight());
 
         effects.start(
-            crate::ui::effects::Animation::PopupOpened,
+            crate::ui::effects::Animation::ContextCleared,
             ratatui::layout::Rect::new(0, 0, 40, 10),
         );
 

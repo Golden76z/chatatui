@@ -103,12 +103,6 @@ fn clear_modal_rows(frame: &mut Frame, area: Rect, popup: Rect) {
     );
 }
 
-/// The rect a modal occupies, for the effect layer — the same geometry the modals themselves
-/// get, so a sweep covers what the popup will cover and nothing else.
-pub fn popup_area(area: Rect) -> Rect {
-    centered(area, popup_width(area), area.height.saturating_sub(4))
-}
-
 /// A `width` × `height` rectangle centred in `area` (clamped to it), for popups.
 fn centered(area: Rect, width: u16, height: u16) -> Rect {
     let [row] = Layout::vertical([Constraint::Length(height.min(area.height))])

@@ -38,10 +38,11 @@
   GGUF's own metadata. In: one architecture (Qwen3), K-quants. Out: GPU, tools, i-quants
   (unsupported by the underlying engine).
 
-- **J35**: bounded visual effects — a popup coalesces into place, the first token of a reply
-  coalesces on the line the waiting line stood on, the lines `/clear` drops fade to grey, and
-  the waiting line shimmers instead of spinning a Braille glyph. Nothing animates
-  continuously: the 30 fps redraw gate is lifted only while a bounded effect runs.
+- **J35**: bounded visual effects — the first token of a reply coalesces on the line the
+  waiting line stood on, the lines `/clear` drops fade to grey, and the waiting line shimmers
+  instead of spinning a Braille glyph. Nothing animates continuously: the 30 fps redraw gate
+  is lifted only while a bounded effect runs. Popups are not animated — each modal sizes
+  itself to its content, so only the renderer knows the rectangle to cover.
 
 ## Next
 

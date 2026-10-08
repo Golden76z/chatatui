@@ -12,8 +12,6 @@ use tachyonfx::{Duration, Effect, EffectRenderer, fx};
 /// A moment worth marking. Independent of how it is drawn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Animation {
-    /// An overlay appeared over the conversation.
-    PopupOpened,
     /// The first token of a reply arrived, replacing the waiting line.
     FirstToken,
     /// `/clear` dropped the context.
@@ -28,13 +26,9 @@ impl Animation {
     fn effect(self) -> Effect {
         let palette = crate::theme::palette();
         match self {
-            // The tick runs at 30 fps and an effect only advances on a drawn frame, so 150 ms
-            // buys four or five of them. A directional sweep crossing a popup in four steps
-            // reads as tearing rather than motion; a coalesce assembles the whole rect at once
-            // and has no direction to stutter along.
             // The timers are `u32` milliseconds on purpose: `EffectTimer` has `From<u32>` and
-            // no `From<i32>`, so a bare `150` would not compile.
-            Self::PopupOpened => fx::coalesce(150u32),
+            // no `From<i32>`, so a bare `120` would not compile. The tick runs at 30 fps and an
+            // effect only advances on a drawn frame, so 120 ms buys three or four of them.
             Self::FirstToken => fx::coalesce(120u32),
             // `/clear` deletes nothing: it moves the context boundary, and the lines it drops
             // stay on screen in `dim`. So they travel from a live colour to the grey they now
@@ -50,7 +44,6 @@ impl Animation {
     /// `ui::render` uses, so an effect covers exactly what the frame drew.
     pub fn area(self, app: &crate::app::App) -> Rect {
         match self {
-            Self::PopupOpened => crate::ui::popup_area(app.viewport),
             // The reply's first line, which is the row the waiting line occupies right now: a
             // token does not refresh the transcript, so its last line is still that waiting
             // line. Scrolled away from it, the row falls outside the pane and nothing plays.
@@ -116,7 +109,7 @@ impl Effects {
 
     /// Starts `animation` over `area`, replacing one of the same kind already running.
     ///
-    /// An empty area starts nothing: a terminal too small to show a popup has nothing to shade.
+    /// An empty area starts nothing: a pane with no room left has nothing to shade.
     pub fn start(&mut self, animation: Animation, area: Rect) {
         if area.width == 0 || area.height == 0 {
             return;
@@ -183,20 +176,20 @@ mod tests {
         let mut effects = Effects::new();
         let area = Rect::new(0, 0, 40, 10);
 
-        effects.start(Animation::PopupOpened, area);
-        effects.start(Animation::PopupOpened, area);
+        effects.start(Animation::ContextCleared, area);
+        effects.start(Animation::ContextCleared, area);
 
         assert_eq!(effects.running_count(), 1);
     }
 
-    /// A terminal too small to show a popup produces an empty rect. tachyonfx has no reason to
+    /// A terminal with no room for the conversation produces an empty rect. tachyonfx has no reason to
     /// be asked to shade nothing, and being unavailable beats panicking.
     #[test]
     fn an_empty_area_starts_nothing() {
         let mut effects = Effects::new();
 
-        effects.start(Animation::PopupOpened, Rect::new(0, 0, 0, 0));
-        effects.start(Animation::PopupOpened, Rect::new(5, 5, 20, 0));
+        effects.start(Animation::ContextCleared, Rect::new(0, 0, 0, 0));
+        effects.start(Animation::ContextCleared, Rect::new(5, 5, 20, 0));
 
         assert!(!effects.in_flight());
     }
@@ -207,9 +200,9 @@ mod tests {
         assert!(!Effects::new().in_flight());
     }
 
-    /// A reply arrives on one line of the conversation, `/clear` empties the whole of it, and
-    /// only the sweep belongs to the popup. Until each animation answered for its own area they
-    /// all shaded the popup rect, so the first token of a reply lit up the middle of the screen.
+    /// A reply arrives on one line of the conversation; `/clear` empties the whole of it. Until
+    /// each animation answered for its own area they shared one rect, and the first token of a
+    /// reply lit up the middle of the screen.
     #[test]
     fn each_animation_plays_where_it_belongs() {
         let mut app = crate::app::App::new(&crate::config::Config::default(), false);
@@ -218,7 +211,6 @@ mod tests {
             height: 30,
         });
 
-        let popup = Animation::PopupOpened.area(&app);
         let first_token = Animation::FirstToken.area(&app);
         let cleared = Animation::ContextCleared.area(&app);
 
@@ -228,8 +220,6 @@ mod tests {
             cleared.height > first_token.height,
             "{cleared:?} vs {first_token:?}"
         );
-        assert_ne!(popup, cleared, "a reply does not arrive in a popup");
-        assert!(popup.width < cleared.width, "{popup:?}");
     }
 
     /// Scrolled up, or on a terminal with no room for the conversation, the reply's line is not
@@ -273,7 +263,7 @@ mod tests {
         let plain = terminal.backend().buffer().clone();
 
         let mut effects = Effects::new();
-        effects.start(Animation::PopupOpened, area);
+        effects.start(Animation::FirstToken, area);
         terminal
             .draw(|frame| {
                 paint(frame);
@@ -377,7 +367,7 @@ mod tests {
         let mut effects = Effects::new();
         // Nothing has been drawn for two seconds, because nothing changed.
         effects.last_frame = Instant::now() - std::time::Duration::from_secs(2);
-        effects.start(Animation::PopupOpened, area);
+        effects.start(Animation::FirstToken, area);
 
         let elapsed = effects.tick();
         terminal
@@ -390,7 +380,7 @@ mod tests {
         assert_ne!(
             terminal.backend().buffer(),
             &plain,
-            "the first frame after the key press shows the sweep, not its end state"
+            "the first frame after the trigger shows the effect, not its end state"
         );
         assert!(effects.in_flight(), "and there is more of it to come");
     }
@@ -413,7 +403,7 @@ mod tests {
     #[test]
     fn a_resize_cancels_everything_in_flight() {
         let mut effects = Effects::new();
-        effects.start(Animation::PopupOpened, Rect::new(0, 0, 40, 10));
+        effects.start(Animation::ContextCleared, Rect::new(0, 0, 40, 10));
         assert!(effects.in_flight());
 
         effects.cancel_all();
