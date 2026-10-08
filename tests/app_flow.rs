@@ -111,6 +111,9 @@ impl Harness {
     fn execute(&mut self, effect: Effect) -> Option<Action> {
         {
             match effect {
+                // Nothing to draw on: this harness has no frame and no clock. `Runtime` is
+                // where an animation becomes visible.
+                Effect::Animate(_) => {}
                 Effect::StartCompletion(job) => {
                     let token = CancellationToken::new();
                     self.cancel = Some(token.clone());

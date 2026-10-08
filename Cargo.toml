@@ -48,6 +48,8 @@ zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 notify = "8"
 notify-debouncer-mini = "0.7.0"
 base64 = "0.22"
+# `dsl` (default) pulls the `anpa` parser for tachyonfx's effect DSL, which we never use.
+tachyonfx = { version = "0.25.2", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 insta = "1.48.0"

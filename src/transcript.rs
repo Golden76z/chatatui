@@ -67,13 +67,41 @@ impl Waiting {
             Phase::Waiting { model } => format!("{model} réfléchit…"),
             Phase::RunningTool { name } => format!("exécution de {name}…"),
         };
-        let glyph = SPINNER[self.frame % SPINNER.len()];
-        let mut spans = vec![Span::styled(format!("{glyph} {what}"), dim)];
+        // A highlight travelling through the label, rather than a spinning glyph. It rides the
+        // frame counter the spinner already turned on, so it costs no extra redraw — and it
+        // needs no Braille, the block a terminal font is most likely to be missing.
+        let mut spans = shimmer(&what, self.frame);
         if let Some(seconds) = self.elapsed_s {
             spans.push(Span::styled(format!("  {seconds} s"), dim));
         }
         Line::from(spans)
     }
+}
+
+/// Cuts `text` into spans with one lit character, moving with `frame`.
+///
+/// The lit character is drawn in the accent colour over the dim rest, so the line reads as
+/// working without the eye being pulled away from the conversation.
+fn shimmer(text: &str, frame: usize) -> Vec<Span<'static>> {
+    let dim = Style::default().fg(crate::theme::palette().dim);
+    let accent = Style::default().fg(crate::theme::palette().accent);
+    let characters: Vec<char> = text.chars().collect();
+    if characters.is_empty() {
+        return Vec::new();
+    }
+    let lit = frame % characters.len();
+    let piece = |range: std::ops::Range<usize>, style: Style| {
+        Span::styled(characters[range].iter().collect::<String>(), style)
+    };
+    let mut spans = Vec::new();
+    if lit > 0 {
+        spans.push(piece(0..lit, dim));
+    }
+    spans.push(piece(lit..lit + 1, accent));
+    if lit + 1 < characters.len() {
+        spans.push(piece(lit + 1..characters.len(), dim));
+    }
+    spans
 }
 
 /// Cached display lines of a conversation.
@@ -88,7 +116,7 @@ pub struct Transcript {
     total_lines: usize,
     /// Incremented whenever the lines change; lets the runtime skip useless redraws.
     revision: u64,
-    /// Messages rendered during the last refresh (for tests and diagnostics).
+    /// Messages whose lines changed during the last refresh (for tests and diagnostics).
     last_rendered: usize,
     /// Version markers (`‹ 2/3 ›`): message, shown version, number of versions.
     marks: Vec<(MessageId, usize, usize)>,
@@ -202,9 +230,14 @@ impl Transcript {
                 } else {
                     lines.extend(body.into_iter().map(dimmed));
                 }
-                entry.lines = lines;
+                // `rendered` feeds `changed`, which moves `revision`, which lifts the redraw
+                // gate. Counting a re-render that produced the same lines repaints an identical
+                // screen — so compare, and only count a real difference.
+                if entry.lines != lines {
+                    entry.lines = lines;
+                    rendered += 1;
+                }
                 entry.dirty = false;
-                rendered += 1;
             }
         }
         let cleared_all = context_start > 0
@@ -237,7 +270,10 @@ impl Transcript {
         self.revision
     }
 
-    /// Number of messages rendered by the last refresh.
+    /// Number of messages whose lines changed during the last refresh.
+    ///
+    /// A message re-rendered to the same lines does not count: it is the count that moves
+    /// [`revision`](Transcript::revision), and an identical screen is not worth a repaint.
     pub fn last_rendered(&self) -> usize {
         self.last_rendered
     }
@@ -625,9 +661,25 @@ mod tests {
         assert_eq!(text(&t.visible(3, 1)), vec!["✳ Salut !"]);
     }
 
+    /// Every message here is long enough that the narrower width wraps it elsewhere.
+    /// `last_rendered` counts the entries whose lines actually differ, so `conversation()`'s
+    /// short messages — which wrap the same way at both widths — would legitimately count as
+    /// nothing rendered, and the test would be measuring the cache rather than the screen.
     #[test]
     fn width_change_renders_everything_again() {
-        let c = conversation();
+        let mut c = Conversation::new();
+        for _ in 0..2 {
+            c.push(
+                Role::User,
+                "une question assez longue pour être repliée",
+                MessageStatus::Complete,
+            );
+            c.push(
+                Role::Assistant,
+                "une réponse assez longue pour être repliée",
+                MessageStatus::Complete,
+            );
+        }
         let mut t = Transcript::default();
         t.refresh(c.messages(), 40, 0);
         t.refresh(c.messages(), 30, 0);
@@ -944,7 +996,7 @@ mod tests {
         // content begins at column 2, exactly where the reply's text will land.
         assert_eq!(
             line.chars().nth(2),
-            Some('⠋'),
+            Some('l'),
             "the content starts at column 2: {line:?}"
         );
     }
@@ -1081,6 +1133,73 @@ mod tests {
             without_glyph.contains("exécution de read_file"),
             "{without_glyph:?}"
         );
+    }
+
+    /// The waiting line's Braille glyph is replaced by a travelling highlight. Braille is the
+    /// one block a terminal font is most likely to lack, and the highlight says "working"
+    /// without needing it.
+    #[test]
+    fn the_waiting_line_shimmers_without_a_braille_glyph() {
+        let text = |frame: usize| -> String {
+            Waiting {
+                phase: crate::llm::Phase::Waiting {
+                    model: "llama3.2".into(),
+                },
+                frame,
+                elapsed_s: None,
+            }
+            .line()
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect()
+        };
+
+        for frame in 0..10 {
+            assert!(
+                !text(frame)
+                    .chars()
+                    .any(|c| ('\u{2800}'..='\u{28FF}').contains(&c)),
+                "no Braille at frame {frame}: {}",
+                text(frame)
+            );
+        }
+    }
+
+    /// And it has to move, or it is not a shimmer: the same text, lit one character further
+    /// along. The whole `Line` differing is also what moves `revision`, since ratatui compares
+    /// a `Span`'s style along with its content.
+    #[test]
+    fn the_shimmer_advances_with_the_frame() {
+        let line = |frame: usize| -> Line<'static> {
+            Waiting {
+                phase: crate::llm::Phase::Loading,
+                frame,
+                elapsed_s: None,
+            }
+            .line()
+        };
+        let text = |frame: usize| -> String {
+            line(frame)
+                .spans
+                .iter()
+                .map(|s| s.content.to_string())
+                .collect()
+        };
+        let accent = Style::default().fg(crate::theme::palette().accent);
+        let lit = |frame: usize| -> String {
+            line(frame)
+                .spans
+                .iter()
+                .filter(|s| s.style == accent)
+                .map(|s| s.content.to_string())
+                .collect()
+        };
+
+        assert_eq!(text(0), text(3), "the same text");
+        assert_ne!(line(0), line(3), "but lit differently");
+        assert_eq!(lit(0).chars().count(), 1, "exactly one character is lit");
+        assert_ne!(lit(0), lit(3), "and it is not the same one");
     }
 
     /// A tool the user already approved is executing, and must stop asking for approval.
@@ -1268,5 +1387,42 @@ mod tests {
             1,
             "{AVATAR:?} must occupy exactly one terminal cell"
         );
+    }
+
+    /// Re-rendering a message that produces the same lines must not move `revision`. The redraw
+    /// gate reads `revision`, so a spurious bump is a full repaint of an identical screen — the
+    /// shape of two bugs J33's review had to fix one at a time.
+    #[test]
+    fn re_rendering_identical_content_leaves_the_revision_alone() {
+        let c = conversation();
+        let mut t = Transcript::default();
+        t.refresh(c.messages(), 40, 0);
+        let settled = t.revision();
+
+        // Nothing changed, but the entry is dirtied as if something had.
+        t.invalidate(c.messages()[1].id);
+        let changed = t.refresh(c.messages(), 40, 0);
+
+        assert_eq!(t.revision(), settled, "identical lines, same revision");
+        assert!(!changed, "and `refresh` says nothing changed");
+    }
+
+    /// The other half: real changes must still move it, or the screen would stop updating.
+    #[test]
+    fn different_content_still_moves_the_revision() {
+        let mut c = conversation();
+        let mut t = Transcript::default();
+        t.refresh(c.messages(), 40, 0);
+        let settled = t.revision();
+
+        let id = c.messages()[1].id;
+        if let Some(m) = c.get_mut(id) {
+            m.content.push_str(" encore");
+        }
+        t.invalidate(id);
+        let changed = t.refresh(c.messages(), 40, 0);
+
+        assert!(t.revision() > settled);
+        assert!(changed);
     }
 }

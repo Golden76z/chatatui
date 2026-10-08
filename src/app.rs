@@ -2831,6 +2831,9 @@ impl App {
         }
         let start = self.conversation.next_id();
         effects.extend(self.move_context_start(start));
+        effects.push(Effect::Animate(
+            crate::ui::effects::Animation::ContextCleared,
+        ));
         self.status = Status::Info(format!(
             "contexte vidé : {count} message(s) ne sont plus envoyés"
         ));
@@ -3062,11 +3065,17 @@ impl App {
         match event {
             LlmEvent::Token(token) => {
                 self.wait = None;
+                let mut effects = Vec::new();
                 if let Some(message) = self.conversation.get_mut(generation.message_id) {
+                    // The first token is where the waiting line gives way to the reply; the
+                    // rest is ordinary streaming and must not repaint the conversation.
+                    if message.content.is_empty() {
+                        effects.push(Effect::Animate(crate::ui::effects::Animation::FirstToken));
+                    }
                     message.content.push_str(&token);
                 }
                 self.transcript.invalidate(generation.message_id);
-                Vec::new()
+                effects
             }
             LlmEvent::Retrieved {
                 first_number,
@@ -4780,14 +4789,104 @@ mod tests {
         let effects = submit(&mut app, "/vider");
         assert_eq!(
             effects,
-            vec![Effect::Store(StoreRequest::SetContextStart {
-                id,
-                start: 2
-            })]
+            vec![
+                Effect::Store(StoreRequest::SetContextStart { id, start: 2 }),
+                // The context really moved, so the dissolve is part of what `/clear` does.
+                Effect::Animate(crate::ui::effects::Animation::ContextCleared),
+            ]
         );
         assert!(app.measured.is_none());
         assert!(app.conversation.context_messages().is_empty());
         assert_eq!(app.prompt().len(), 1, "only the system prompt remains");
+    }
+
+    /// The first token is the moment the waiting line gives way to the reply. Later tokens are
+    /// not: animating each one would repaint the conversation thirty times a second.
+    #[test]
+    fn only_the_first_token_animates() {
+        let mut app = app();
+        let job = send(&mut app, "?");
+
+        let first = app.update(Action::Llm {
+            request_id: job.request_id,
+            event: LlmEvent::Token("Bon".into()),
+        });
+        let second = app.update(Action::Llm {
+            request_id: job.request_id,
+            event: LlmEvent::Token("jour".into()),
+        });
+
+        assert!(
+            first.iter().any(|e| matches!(
+                e,
+                Effect::Animate(crate::ui::effects::Animation::FirstToken)
+            )),
+            "the first token animates: {first:?}"
+        );
+        assert!(
+            !second.iter().any(|e| matches!(e, Effect::Animate(_))),
+            "the second does not: {second:?}"
+        );
+    }
+
+    /// A `/compact` summary arrives through the same path and animates the same way: it is a
+    /// reply landing where the waiting line was. Pinned so that a future change to summaries is
+    /// a decision rather than a surprise.
+    #[test]
+    fn a_summary_s_first_token_animates_like_any_reply() {
+        let mut app = app();
+        let job = send(&mut app, "a");
+        llm(&mut app, job.request_id, LlmEvent::Token("b".into()));
+        llm(&mut app, job.request_id, LlmEvent::Done);
+        let effects = submit(&mut app, "/compact");
+        let Some(Effect::StartCompletion(summary)) = effects.first() else {
+            panic!("a summary job started");
+        };
+
+        let first = app.update(Action::Llm {
+            request_id: summary.request_id,
+            event: LlmEvent::Token("résumé".into()),
+        });
+
+        assert!(first.iter().any(|e| matches!(
+            e,
+            Effect::Animate(crate::ui::effects::Animation::FirstToken)
+        )));
+    }
+
+    /// `/clear` on an empty context changes nothing and says so. A dissolve over nothing would
+    /// be a visible lie.
+    #[test]
+    fn clearing_an_empty_context_animates_nothing() {
+        let mut app = app();
+
+        let effects = submit(&mut app, "/clear");
+
+        assert!(
+            !effects.iter().any(|e| matches!(e, Effect::Animate(_))),
+            "nothing was dropped, so nothing dissolves: {effects:?}"
+        );
+        assert!(matches!(&app.status, Status::Info(m) if m.contains("déjà vide")));
+    }
+
+    /// And when it does drop something, it animates.
+    #[test]
+    fn clearing_a_real_context_animates() {
+        let mut app = app();
+        let job = send(&mut app, "une question");
+        llm(
+            &mut app,
+            job.request_id,
+            LlmEvent::Token("une réponse".into()),
+        );
+        llm(&mut app, job.request_id, LlmEvent::Done);
+
+        let effects = submit(&mut app, "/clear");
+
+        assert!(effects.iter().any(|e| matches!(
+            e,
+            Effect::Animate(crate::ui::effects::Animation::ContextCleared)
+        )));
     }
 
     #[test]

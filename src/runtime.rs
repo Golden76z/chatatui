@@ -46,6 +46,9 @@ const DEFAULT_REVISION: &str = "main";
 #[derive(Debug)]
 pub struct Runtime {
     app: App,
+    /// Bounded visual effects, drawn over the finished frame. Here because `Runtime` owns the
+    /// clock and `App::update` is pure.
+    effects: crate::ui::effects::Effects,
     events: EventHandler,
     backends: stream_task::Backends,
     /// Provider ids in display order (for the model list).
@@ -218,6 +221,7 @@ impl Runtime {
         });
         Ok(Self {
             app: App::new(&config, keyboard_enhanced).with_session_seed(session_seed()),
+            effects: crate::ui::effects::Effects::new(),
             events,
             backends,
             provider_order,
@@ -250,7 +254,13 @@ impl Runtime {
         let mut needs_redraw = true;
         while self.app.running {
             if needs_redraw {
-                terminal.draw(|frame| ui::render(&self.app, frame))?;
+                let elapsed = self.effects.tick();
+                // Split the borrow: the closure reads `app` and advances `effects`.
+                let (app, effects) = (&self.app, &mut self.effects);
+                terminal.draw(|frame| {
+                    ui::render(app, frame);
+                    effects.render(frame, elapsed);
+                })?;
             }
             // Wait for one event, then drain whatever is already queued (typing bursts,
             // token bursts) so we draw once per batch.
@@ -286,7 +296,11 @@ impl Runtime {
                 // dirtied — that is the 30 fps markdown cap.
                 let before = (self.app.transcript.revision(), self.app.spinner_frame());
                 self.dispatch(Action::Tick);
-                return (self.app.transcript.revision(), self.app.spinner_frame()) != before;
+                let changed = (self.app.transcript.revision(), self.app.spinner_frame()) != before;
+                // An effect repaints without dirtying the transcript or turning the spinner, so
+                // the gate has to ask it too. Only bounded effects answer yes: a continuous one
+                // would hold the gate open and undo the 30 fps cap.
+                return changed || self.effects.in_flight();
             }
             Event::Crossterm(TermEvent::Key(key)) if key.kind == KeyEventKind::Press => {
                 keymap::map_key(key, self.app.key_context())
@@ -375,14 +389,30 @@ impl Runtime {
 
     /// Updates the app and runs the resulting effects.
     fn dispatch(&mut self, action: Action) {
+        let had_overlay = self.app.overlay.is_some();
+        let resized = matches!(action, Action::Resize { .. });
         for effect in self.app.update(action) {
             self.execute(effect);
+        }
+        if resized {
+            // Every running effect holds the `Rect` it was started on, and that rect means
+            // nothing once the terminal changed size.
+            self.effects.cancel_all();
+        } else if !had_overlay && self.app.overlay.is_some() {
+            // Eleven sites assign `self.overlay = Some(…)` and none of them would remember a
+            // trigger, so the opening is observed here rather than declared there.
+            let animation = crate::ui::effects::Animation::PopupOpened;
+            self.effects.start(animation, animation.area(&self.app));
         }
     }
 
     /// Runs a side effect requested by the app.
     fn execute(&mut self, effect: Effect) {
         match effect {
+            Effect::Animate(animation) => {
+                // Each animation knows its own area; a reply does not arrive in a popup.
+                self.effects.start(animation, animation.area(&self.app));
+            }
             Effect::StartCompletion(job) => {
                 // Only one generation at a time: stop any leftover task first.
                 if let Some((_, token, _)) = self.running_task.take() {
@@ -762,6 +792,24 @@ fn session_seed() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The gate redraws a tick only when the screen changed. An effect changes the screen
+    /// without touching the transcript or the spinner, so it has to be asked about.
+    #[test]
+    fn a_running_effect_asks_for_a_redraw() {
+        let mut effects = crate::ui::effects::Effects::new();
+        assert!(!effects.in_flight());
+
+        effects.start(
+            crate::ui::effects::Animation::PopupOpened,
+            ratatui::layout::Rect::new(0, 0, 40, 10),
+        );
+
+        assert!(
+            effects.in_flight(),
+            "the tick arm redraws while this is true"
+        );
+    }
 
     /// Review Focus 1: the revision a pasted URL names must be the one asked for, all the
     /// way from what the user types to the HTTP request.

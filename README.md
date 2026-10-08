@@ -99,8 +99,9 @@ with its language on the line above and, when the reply holds several blocks, th
 `/copy code N` asks for, right-aligned on that same line.
 
 The input carries one horizontal rule above it rather than a box. While no word has
-arrived yet, the application names the wait where the text itself will appear, with a
-turning glyph and the seconds past the first, in the order the waits occur: `recherche
+arrived yet, the application names the wait where the text itself will appear, a
+highlight travelling through the label and the seconds past the first, in the order the
+waits occur: `recherche
 dans 2 collections…`, `connexion…`, `llama3.2 réfléchit…`, `exécution de read_file…`. A
 tool-using answer names them again for every round, the second one carrying the tool
 output and so waiting longest. The version marker
@@ -109,6 +110,13 @@ compare it against.
 
 Both palettes pin indexed tones rather than the eight basic ANSI colours, which every
 terminal theme redefines; `theme = "light"` switches to the light one.
+
+**Motion.** Four moments are animated, briefly: a popup sweeps in, the first token of a
+reply coalesces on the line where the waiting line stood, `/clear` dissolves the context it
+drops, and a highlight travels through the waiting line instead of a spinning glyph. Each
+lasts under a quarter of a second, and nothing animates continuously — the renderer only
+redraws a frame when the screen actually changed, and an effect is the only thing allowed to
+lift that rule, for as long as it runs.
 
 ### Context gauge
 

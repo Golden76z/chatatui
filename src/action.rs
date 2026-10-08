@@ -171,6 +171,9 @@ pub enum Action {
 /// Keeping I/O out of `App` makes the state logic testable without a network or a database.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Effect {
+    /// Play a visual effect. Declared here because the moment is the application's to know;
+    /// drawing it is `Runtime`'s.
+    Animate(crate::ui::effects::Animation),
     /// Spawn a streaming task for this job.
     StartCompletion(CompletionJob),
     /// Abort the streaming task of this request.

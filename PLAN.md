@@ -41,9 +41,9 @@ src/
   storage/  mod.rs schema.rs worker.rs
   markdown/ render.rs highlight.rs wrap.rs
   models/   mod.rs hub.rs gguf.rs store.rs download.rs tokenizer.rs template.rs
-  ui/       mod.rs chat.rs context_view.rs help.rs model_picker.rs models_view.rs
-            gguf_picker.rs palette.rs prompt_view.rs sidebar.rs status_bar.rs
-            suggestions.rs text_popup.rs
+  ui/       mod.rs chat.rs context_view.rs effects.rs help.rs model_picker.rs
+            models_view.rs gguf_picker.rs palette.rs prompt_view.rs sidebar.rs
+            status_bar.rs suggestions.rs text_popup.rs
 tests/      app_flow.rs http_clients.rs fixtures/*.sse
 ```
 
@@ -161,6 +161,7 @@ tests/      app_flow.rs http_clients.rs fixtures/*.sse
 | J32 ✅ | Local model store: `/pull <dépôt> [fichier]` downloads a GGUF from HuggingFace (`owner/name` or a pasted URL, picker over the repository's files, resumable after `Esc`, sha256 checked when published), the file's own header gives architecture, quantization, context window and parameter count, `/models` is one browsable list of what is on disk (schema v11) and a short hand-picked set of well-known repositories that are not — `Entrée` opens the quantization picker for any row (including one on disk, to fetch another quantization), `Suppr` deletes, `/rm` does the same from the input; `[models] dir` / `token_env`. Downloading and inspecting only in this milestone — J34 makes Qwen3 GGUFs runnable |
 | J33 ✅ | Editorial visual direction: both palettes pinned to indexed tones, role read from position (reply at column 2, question at column 8 and dimmed) instead of a coloured `▌ Vous` / `▌ Assistant` header, markdown reduced to weight, rules and indentation (heading rule the width of its text, `·` lists, code blocks indented with their language and number above rather than a per-line `▎` gutter), one rule above the input instead of a box, and `LlmEvent::Phase` so the application names the wait before the first token (`recherche dans 2 collections…`, `connexion…`, `llama3.2 réfléchit…`, `exécution de read_file…`, each round of a tool-using answer announcing its own) with a turning glyph and the seconds past the first. Still no local inference: the J32 store downloads GGUF files it cannot yet execute |
 | J34 ✅ | Local inference: a `local` provider, listed and selected through `/model` like any other, decodes a Qwen3 GGUF from the J32 store in-process on a dedicated OS thread (never the tokio runtime) and streams the reply — tokenizer and chat template read from the GGUF's own metadata, no server, no key. One architecture (Qwen3), CPU only, no tools; legacy and K-quant families (`Q4_0`…`Q8_1`, `Q2_K`…`Q8_K`, so `Q4_K_M` and the other suffixed variants) plus `F32`/`F16`/`BF16`, `Q4_K_M` recommended; i-quants (`IQ*`) are implemented by no candle dtype and are refused at load |
+| J35 ✅ | Bounded visual effects (tachyonfx): a popup sweeps in over its own rect (150 ms), the first token of a reply coalesces on the line the waiting line stood on (120 ms), `/clear` dissolves the conversation it drops (200 ms) and animates nothing when the context was already empty, and the waiting line carries a travelling highlight instead of a Braille glyph — span styling on the frame counter that already turned, not an effect, because the line has no reachable rect and a repeating effect never reports `done()`. `Runtime` owns the effects because it owns the clock: `App` only declares `Effect::Animate(..)`, the popup sweep is observed by diffing `app.overlay.is_some()` across a dispatch, a resize cancels everything, and the 30 fps redraw gate gains `|| effects.in_flight()` — bounded effects only. Carries J33's debt: `Transcript::refresh` compares the lines it just rendered before moving `revision` |
 
 Continuous integration (`.github/workflows/ci.yml`) runs the same checks on every push;
 pushing a `v*` tag builds release binaries (`release.yml`).
