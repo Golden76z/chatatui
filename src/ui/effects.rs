@@ -116,6 +116,12 @@ impl Effects {
         if area.width == 0 || area.height == 0 {
             return;
         }
+        // The clock is wound by drawn frames, and the interface draws only when it changed: an
+        // effect started after a quiet stretch would be handed the whole gap on its first frame
+        // and finish before being seen. Nothing is running, so no other effect loses time.
+        if self.running.is_empty() {
+            self.last_frame = Instant::now();
+        }
         self.running.retain(|(kind, _, _)| *kind != animation);
         self.running.push((animation, area, animation.effect()));
     }
@@ -335,6 +341,46 @@ mod tests {
             &plain,
             "the conversation is back on the last frame, not dissolved away"
         );
+    }
+
+    /// An effect started while the interface sat idle must still be seen. `tick` measures the
+    /// gap between *drawn frames*, and the renderer draws only when the screen changed — so
+    /// pressing F2 after a quiet second leaves a gap longer than any effect here lasts, and the
+    /// effect's first frame would be its last. This is the whole animation, invisible.
+    #[test]
+    fn an_effect_started_after_an_idle_stretch_still_plays() {
+        let mut terminal = Terminal::new(TestBackend::new(20, 5)).expect("a test terminal");
+        let area = Rect::new(0, 0, 20, 5);
+        let paint = |frame: &mut Frame| {
+            frame.render_widget(
+                ratatui::widgets::Paragraph::new("bonjour").style(
+                    ratatui::style::Style::default().fg(ratatui::style::Color::Indexed(110)),
+                ),
+                area,
+            );
+        };
+        terminal.draw(|frame| paint(frame)).expect("draws");
+        let plain = terminal.backend().buffer().clone();
+
+        let mut effects = Effects::new();
+        // Nothing has been drawn for two seconds, because nothing changed.
+        effects.last_frame = Instant::now() - std::time::Duration::from_secs(2);
+        effects.start(Animation::PopupOpened, area);
+
+        let elapsed = effects.tick();
+        terminal
+            .draw(|frame| {
+                paint(frame);
+                effects.render(frame, elapsed);
+            })
+            .expect("draws");
+
+        assert_ne!(
+            terminal.backend().buffer(),
+            &plain,
+            "the first frame after the key press shows the sweep, not its end state"
+        );
+        assert!(effects.in_flight(), "and there is more of it to come");
     }
 
     /// A suspended process or an unfocused terminal can leave minutes between frames. The cap in
