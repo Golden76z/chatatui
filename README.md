@@ -111,9 +111,10 @@ compare it against.
 Both palettes pin indexed tones rather than the eight basic ANSI colours, which every
 terminal theme redefines; `theme = "light"` switches to the light one.
 
-**Motion.** Four moments are animated, briefly: a popup sweeps in, the first token of a
-reply coalesces on the line where the waiting line stood, `/clear` dissolves the context it
-drops, and a highlight travels through the waiting line instead of a spinning glyph. Each
+**Motion.** Four moments are animated, briefly: a popup coalesces into place, the first
+token of a reply coalesces on the line where the waiting line stood, the lines `/clear`
+drops from the context fade to the grey they now carry — it deletes nothing, and the effect
+says so — and a highlight travels through the waiting line instead of a spinning glyph. Each
 lasts under a quarter of a second, and nothing animates continuously — the renderer only
 redraws a frame when the screen actually changed, and an effect is the only thing allowed to
 lift that rule, for as long as it runs.

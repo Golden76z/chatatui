@@ -7,7 +7,7 @@
 use std::time::Instant;
 
 use ratatui::{Frame, layout::Rect};
-use tachyonfx::{Duration, Effect, EffectRenderer, Motion, fx};
+use tachyonfx::{Duration, Effect, EffectRenderer, fx};
 
 /// A moment worth marking. Independent of how it is drawn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -28,13 +28,18 @@ impl Animation {
     fn effect(self) -> Effect {
         let palette = crate::theme::palette();
         match self {
-            // 150 ms: long enough to be seen as motion, short enough that a popup the user
-            // asked for does not feel slow to arrive.
+            // The tick runs at 30 fps and an effect only advances on a drawn frame, so 150 ms
+            // buys four or five of them. A directional sweep crossing a popup in four steps
+            // reads as tearing rather than motion; a coalesce assembles the whole rect at once
+            // and has no direction to stutter along.
             // The timers are `u32` milliseconds on purpose: `EffectTimer` has `From<u32>` and
             // no `From<i32>`, so a bare `150` would not compile.
-            Self::PopupOpened => fx::sweep_in(Motion::UpToDown, 10, 0, palette.bar_bg, 150u32),
+            Self::PopupOpened => fx::coalesce(150u32),
             Self::FirstToken => fx::coalesce(120u32),
-            Self::ContextCleared => fx::dissolve(200u32),
+            // `/clear` deletes nothing: it moves the context boundary, and the lines it drops
+            // stay on screen in `dim`. So they travel from a live colour to the grey they now
+            // have. A dissolve would say "deleted" and then be contradicted by the next frame.
+            Self::ContextCleared => fx::fade_from_fg(palette.assistant, 200u32),
         }
     }
 
@@ -129,7 +134,8 @@ impl Effects {
     /// Draws every running effect over the frame.
     ///
     /// Finished effects are dropped here, *before* drawing, not after: an effect's last frame is
-    /// its end state, and `fx::dissolve` ends on blank cells. Dropping it on the way out would
+    /// its end state, and an end state need not be the plain frame — `fx::dissolve` ends on
+    /// blank cells. Dropping it on the way out would
     /// leave that blank frame on screen, because `in_flight` would go false in the same breath
     /// and the redraw gate would stop asking for frames. Kept one frame longer, the effect holds
     /// the gate open for one more pass, and that pass draws the interface plain.
@@ -307,10 +313,14 @@ mod tests {
         assert!(!effects.in_flight(), "and only then does the gate drop");
     }
 
-    /// `fx::dissolve` ends on blank cells, so its last frame is an empty conversation. Dropping
-    /// a finished effect before drawing — rather than after — is what brings the screen back:
-    /// the gate stops asking for frames the moment nothing is in flight, so a blank last frame
-    /// would stay on screen until the next keystroke. `/clear` is that effect.
+    /// An effect whose end state is not the plain frame must not leave that end state on
+    /// screen: the gate stops asking for frames the moment nothing is in flight, so the last
+    /// frame would stay until the next keystroke. Dropping a finished effect *before* drawing
+    /// is what buys the frame that undoes it.
+    ///
+    /// The effect is built by hand because no animation currently chooses one — `/clear` used
+    /// `fx::dissolve`, which ends on blank cells, until the dissolve was found to promise a
+    /// deletion that never happens. The contract belongs to `render`, not to today's choices.
     #[test]
     fn an_effect_ending_on_blank_cells_still_leaves_the_frame_plain() {
         let mut terminal = Terminal::new(TestBackend::new(20, 2)).expect("a test terminal");
@@ -323,7 +333,9 @@ mod tests {
         let plain = terminal.backend().buffer().clone();
 
         let mut effects = Effects::new();
-        effects.start(Animation::ContextCleared, area);
+        effects
+            .running
+            .push((Animation::ContextCleared, area, fx::dissolve(200u32)));
         let mut frames = 0;
         while effects.in_flight() && frames < 20 {
             terminal
