@@ -94,21 +94,26 @@ Triggers use the idiom the repository already has. `App::update` returns `Vec<Ef
 `Runtime` executes them, so a visual animation is one more kind of effect:
 
 ```rust
-Effect::Animate(Animation::PopupOpened)     // the overlay arms opened an overlay
 Effect::Animate(Animation::FirstToken)      // the first token of a reply arrived
 Effect::Animate(Animation::ContextCleared)  // /clear dropped the context
 ```
 
-One line in each arm that already handles the action. A reviewer reading `app.rs` can see which
-actions animate without reading the effect layer at all.
+One line each, in the arm that already handles the action — `clear_context` already returns
+`Vec<Effect>`. A reviewer reading `app.rs` sees which actions animate without opening the effect
+layer.
 
-### Why not diff the app state in `Runtime`
+### The popup sweep is the exception: `Runtime` detects it
 
-The alternative is for `Runtime` to compare `App` before and after each dispatch, the way the
-gate already compares `revision`. It would touch `app.rs` not at all. It was rejected: "a popup
-opened" is a clean diff, but "the first token arrived" and "the context was cleared" are not,
-and the reader of `runtime.rs` would find reconstructed intent where `app.rs` has the intent
-itself.
+Eleven sites in `app.rs` assign `self.overlay = Some(…)` and there is no helper to put a trigger
+in. Declaring the animation at each would be eleven lines to forget at the twelfth overlay.
+
+`Runtime` already diffs `App` across a dispatch — that is what the redraw gate does. Comparing
+`app.overlay().is_some()` before and after covers all eleven sites and every overlay added
+later, in one place. The intent being reconstructed here is trivial and total: an overlay exists
+now that did not before.
+
+So the rule is by cardinality, not by principle: one intentional site declares its animation,
+many incidental sites are observed.
 
 ## Components
 
